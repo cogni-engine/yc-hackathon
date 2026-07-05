@@ -1,28 +1,19 @@
 import { AgentSession, sleep, jitter, type BlockSnapshot } from './session';
 import {
   CognoBrain,
-  quickThink,
   pingBrain,
   brainProvider,
   brainModel,
-  fastProvider,
-  fastModel,
   type AgentOp,
 } from './brain';
 import { listNotes } from './notes';
 
-// Two brains, one cursor:
-// fast = reflexes — an ENGAGED WORK LOOP that starts ~600ms after a human
-//        begins typing and keeps cycling (look → edit → look again) while
-//        they write, revising even its own earlier output. Disengages after
-//        a couple of idle rounds.
-// deep = the thinker — fires after the burst settles, full-document quality.
-const FAST_DELAY_MS = 350;
-const FAST_LOOP_GAP_MS = 400; // pause between engaged-loop rounds
-const FAST_IDLE_ROUNDS = 2; // consecutive no-op rounds before disengaging
-const DEEP_QUIET_MS = 700;
-const DEEP_COOLDOWN_MS = 8000;
-const DEEP_CYCLES = 2; // split each deep pass into short generate→perform cycles
+// ONE work loop per note. It engages ~350ms after a human's first keystroke
+// and keeps cycling — look → think briefly → edit → look again — until a
+// couple of rounds find nothing to do. One brain, one cursor, no dual paths.
+const ENGAGE_DELAY_MS = 350;
+const LOOP_GAP_MS = 400; // pause between loop rounds
+const IDLE_ROUNDS = 2; // consecutive no-op rounds before disengaging
 const MAX_SESSIONS = Number(process.env.AGENT_MAX_SESSIONS) || 6; // concurrent notes
 const NOTES_POLL_MS = 15000; // how often to look for new notes
 
@@ -172,9 +163,9 @@ interface WatcherHandle {
 }
 
 /**
- * Join one note's doc and co-edit it until destroyed. Each note gets its own
- * CognoBrain — a running Claude conversation, so the agent remembers what it
- * already contributed to THIS note and builds on it.
+ * Join one note's doc and co-edit it until destroyed. One CognoBrain per
+ * note — a running conversation, so the agent remembers what it already
+ * contributed to THIS note and builds on it.
  */
 async function watchNote(
   noteId: number | string,
@@ -195,42 +186,20 @@ async function watchNote(
   log(`${tag} joined (${session.markdown().length} chars)`);
 
   let ready = false;
-  let busy = false; // ONE cursor — fast and deep actions are serialized
-  let missedDeep = false;
+  let busy = false;
   let destroyed = false;
-  let fastArmed = true; // leading-edge: re-armed when the loop disengages
-  let fastTimer: ReturnType<typeof setTimeout> | null = null;
-  let deepTimer: ReturnType<typeof setTimeout> | null = null;
-  let lastDeepEnd = 0;
-  let lastHash = hashBlocks(session.blocks());
+  let armed = true; // leading-edge: re-armed when the loop disengages
+  let timer: ReturnType<typeof setTimeout> | null = null;
+  // Baseline for "what did humans change" — advances every loop round and
+  // after our own edits, so our edits never read as human input.
   let prevBlocks = new Map(
     session.blocks().map(b => [b.id ?? '', b.markdown] as const)
   );
-  // Blocks Cogno itself authored/edited — passed to the brains so they treat
-  // them as revisable drafts, and excluded from "human changed" diffs.
+  // Blocks Cogno authored — revisable drafts. Ownership is revoked the
+  // moment a human edits one of them.
   const ownBlocks = new Set<string>();
 
-  /** Diff against the last baseline; refresh baseline after every action. */
-  const snapshot = () => {
-    const blocks = session.blocks();
-    const hash = hashBlocks(blocks);
-    const changedIds = blocks
-      .filter(b => b.id && prevBlocks.get(b.id) !== b.markdown && b.markdown)
-      .map(b => b.id as string);
-    return { blocks, hash, changedIds };
-  };
-
-  const refreshBaseline = () => {
-    const after = session.blocks();
-    lastHash = hashBlocks(after);
-    prevBlocks = new Map(after.map(b => [b.id ?? '', b.markdown] as const));
-  };
-
-  /**
-   * Record which blocks OUR ops touched. Precision matters: while we edit,
-   * the human keeps typing — a naive before/after diff would claim THEIR
-   * fresh block as ours, and the next round would happily "revise" (eat) it.
-   */
+  /** Record which blocks OUR ops touched (never claims fresh human blocks). */
   const trackOwn = (
     before: Map<string, string>,
     ops: AgentOp[],
@@ -245,232 +214,14 @@ async function watchNote(
     }
   };
 
-  // Deep-brain priority: when the burst has settled long enough, the reflex
-  // loop yields so the deep pass isn't starved behind the busy lock.
-  let deepDueAt = Infinity;
-  const deepDue = () => Date.now() >= deepDueAt;
-
-  // Engaged work loop: the human started typing. Keep cycling — look, make a
-  // tiny out-of-the-way edit, look again — until nothing new is happening.
-  const fastLoop = async () => {
-    if (busy || destroyed) {
-      fastArmed = true;
-      return;
-    }
-    busy = true;
-    let loopBaseline = new Map(prevBlocks);
-    let idleRounds = 0;
-    let lastLoopHash = '';
-    let rewriteAskActive = false;
-    let deleteAskActive = false;
-    let blockedRetries = 0;
-    try {
-      while (!destroyed && idleRounds < FAST_IDLE_ROUNDS) {
-        const blocks = session.blocks();
-        const hash = hashBlocks(blocks);
-        if (hash === lastLoopHash) {
-          idleRounds++;
-          await sleep(FAST_LOOP_GAP_MS);
-          continue;
-        }
-        lastLoopHash = hash;
-
-        // Any block that changed while we were NOT editing was touched by a
-        // human — including blocks we created (they typed into our paragraph).
-        // Ownership is revoked on human touch: it's their text now.
-        const humanChanged = blocks.filter(
-          b => b.id && loopBaseline.get(b.id) !== b.markdown && b.markdown
-        );
-        for (const b of humanChanged) ownBlocks.delete(b.id as string);
-        const changedIds = humanChanged.map(b => b.id as string);
-        loopBaseline = new Map(blocks.map(b => [b.id ?? '', b.markdown] as const));
-        const activeBlockId = changedIds[changedIds.length - 1] ?? null;
-
-        // Visible reaction FIRST — glide the caret next to where the human is
-        // working before any model call, so Cogno always "looks" immediately.
-        if (activeBlockId) {
-          const hit = session.findBlock(activeBlockId);
-          if (hit) {
-            session.broadcastCursor(
-              Math.min(hit.pos + hit.node.nodeSize, session.docEnd())
-            );
-          }
-        }
-
-        const { thought, ops: rawOps } = await quickThink({
-          blocks,
-          changedIds,
-          activeBlockId,
-          ownBlockIds: [...ownBlocks],
-        });
-        // HARD GUARD: what the human is typing RIGHT NOW is untouchable.
-        // The reflex may append anywhere and revise/delete its OWN blocks.
-        // Replacing an OLDER human block is allowed only while the human's
-        // fresh text contains an explicit rewrite ask (訳して/直して/追加して…)
-        // — that enables "この文章を英語に" without ever eating notes.
-        const freshHuman = new Set(changedIds);
-        const freshText = blocks
-          .filter(b => b.id && freshHuman.has(b.id))
-          .map(b => b.markdown)
-          .join('\n');
-        // A rewrite ask stays live for the whole engagement, so multi-round
-        // sweeps (translate block by block) keep going after the ask scrolls
-        // out of the fresh diff.
-        if (
-          /にして|訳し|翻訳|直して|修正|書き換え|追加して|加えて|入れて|translate|rewrite|update|fix|add/i.test(
-            freshText
-          )
-        ) {
-          rewriteAskActive = true;
-        }
-        if (/消して|消せ|けして|削除|消去|delete|remove/i.test(freshText)) {
-          deleteAskActive = true;
-        }
-        const ops = rawOps.filter(
-          op =>
-            op.action === 'append_after' ||
-            (op.blockId != null && ownBlocks.has(op.blockId)) ||
-            (op.action === 'replace' &&
-              op.blockId != null &&
-              !freshHuman.has(op.blockId) &&
-              rewriteAskActive) ||
-            (op.action === 'delete' &&
-              op.blockId != null &&
-              !freshHuman.has(op.blockId) &&
-              deleteAskActive)
-        );
-        if (ops.length < rawOps.length) {
-          log(`${tag} reflex: blocked ${rawOps.length - ops.length} op(s) targeting human text`);
-        }
-        // All ops blocked = usually round-1 freshness (seed just arrived);
-        // give the model a couple of retry rounds before disengaging — the
-        // same op is legal once the text is no longer "just typed".
-        if (rawOps.length > 0 && ops.length === 0 && blockedRetries < 3) {
-          blockedRetries++;
-          idleRounds = 0;
-          lastLoopHash = ''; // force a fresh look next round
-          await sleep(FAST_LOOP_GAP_MS + 400);
-          continue;
-        }
-        if (ops.length > 0) {
-          log(`${tag} reflex: ${thought} → ${ops.length} op(s)`);
-          const before = new Map(
-            session.blocks().map(b => [b.id ?? '', b.markdown] as const)
-          );
-          session.setTyping(true);
-          await executeOps(session, ops);
-          session.setTyping(false);
-          trackOwn(before, ops, freshHuman);
-          idleRounds = 0;
-          // Our own edits are part of lastLoopHash next round via re-snapshot.
-          lastLoopHash = '';
-        } else {
-          idleRounds++;
-        }
-        // The deep brain must not starve behind a chatty reflex loop.
-        if (deepDue()) break;
-        await sleep(FAST_LOOP_GAP_MS);
-      }
-    } catch (err) {
-      log(`${tag} reflex failed:`, err instanceof Error ? err.message : err);
-    } finally {
-      // The caret stays on the note (parked out of the way) — Cogno is always
-      // visibly in the room, not popping in and out.
-      session.setTyping(false);
-      session.parkCursor();
-      // Reflex edits become part of the next deep diff — do NOT refresh the
-      // shared baseline here, so the deep brain still sees what humans changed.
-      busy = false;
-      fastArmed = true;
-    }
-  };
-
-  // Deep pass: burst settled. Full-document thinking + layout ownership.
-  const deepAct = async () => {
-    if (destroyed) return;
-    if (busy) {
-      // The reflex loop checks deepDue() and yields; retry shortly instead of
-      // waiting for the next human keystroke.
-      missedDeep = true;
-      if (deepTimer) clearTimeout(deepTimer);
-      deepTimer = setTimeout(() => void deepAct(), 1500);
-      return;
-    }
-    deepDueAt = Infinity;
-    busy = true;
-    try {
-      // Short generate→perform cycles: pass 1 does the most impactful bit
-      // with a SHORT generation (fast first visible edit), pass 2 finishes.
-      for (let cycle = 1; cycle <= DEEP_CYCLES; cycle++) {
-        const { blocks, hash, changedIds } = snapshot();
-        if (cycle === 1 && hash === lastHash) return;
-
-        log(
-          `${tag} thinking… (pass ${cycle}/${DEEP_CYCLES}, ${blocks.length} blocks, changed: ${changedIds.join(', ') || '-'})`
-        );
-        const { thought, ops: rawOps } = await brain.think({
-          blocks,
-          changedIds,
-          ownBlockIds: [...ownBlocks],
-          pass: { n: cycle, of: DEEP_CYCLES },
-        });
-        // GUARD: the human's newest block (their latest message/instruction)
-        // may never be deleted or rewritten — even by the deep brain.
-        const newestHuman = changedIds[changedIds.length - 1];
-        const ops = rawOps.filter(
-          op =>
-            op.action === 'append_after' ||
-            op.blockId == null ||
-            op.blockId !== newestHuman ||
-            ownBlocks.has(op.blockId)
-        );
-        if (ops.length < rawOps.length) {
-          log(`${tag} blocked ${rawOps.length - ops.length} op(s) on the human's newest block`);
-        }
-        log(`${tag} decision: ${thought} → ${ops.length} op(s)`);
-        if (ops.length === 0) break; // nothing (left) to do
-
-        const before = new Map(
-          session.blocks().map(b => [b.id ?? '', b.markdown] as const)
-        );
-        session.setTyping(true);
-        await executeOps(session, ops);
-        session.setTyping(false);
-        trackOwn(before, ops, new Set(changedIds));
-        log(`${tag} pass ${cycle} done.`);
-      }
-    } catch (err) {
-      log(`${tag} act failed:`, err instanceof Error ? err.message : err);
-    } finally {
-      session.setTyping(false);
-      session.parkCursor();
-      refreshBaseline();
-      lastDeepEnd = Date.now();
-      busy = false;
-      if (missedDeep && !destroyed) {
-        missedDeep = false;
-        scheduleDeep();
-      }
-    }
-  };
-
-  const scheduleDeep = () => {
-    if (destroyed) return;
-    if (deepTimer) clearTimeout(deepTimer);
-    const wait = Math.max(DEEP_QUIET_MS, lastDeepEnd + DEEP_COOLDOWN_MS - Date.now());
-    deepDueAt = Date.now() + wait;
-    deepTimer = setTimeout(() => void deepAct(), wait);
-  };
-
   // Anticipation: the INSTANT a human's fresh text hints at a target ("図"
-  // → the diagram), glide the caret there before any model call returns.
-  // Pure heuristics — this is what makes Cogno feel like it's already moving.
+  // → the diagram), glide the caret there before any model call.
   let lastAnticipate = 0;
   let lastAnticipateTarget = '';
   const anticipate = () => {
     if (busy || destroyed) return;
     const now = Date.now();
-    if (now - lastAnticipate < 300) return; // sub-second reaction, throttled
+    if (now - lastAnticipate < 300) return;
     lastAnticipate = now;
     try {
       const blocks = session.blocks();
@@ -494,7 +245,6 @@ async function watchNote(
         }
       }
       if (/英語|日本語|english|translate|訳し|翻訳/i.test(fresh)) {
-        // Orient toward the top — translation sweeps start there.
         const first = blocks.find(b => b.markdown && !b.markdown.startsWith('```'));
         if (first?.id) {
           const hit = session.findBlock(first.id);
@@ -512,6 +262,133 @@ async function watchNote(
     }
   };
 
+  // THE work loop: look → think briefly → edit → look again.
+  const workLoop = async () => {
+    if (busy || destroyed) {
+      armed = true;
+      return;
+    }
+    busy = true;
+    let idleRounds = 0;
+    let lastLoopHash = '';
+    let rewriteAskActive = false;
+    let deleteAskActive = false;
+    let blockedRetries = 0;
+    try {
+      while (!destroyed && idleRounds < IDLE_ROUNDS) {
+        const blocks = session.blocks();
+        const hash = hashBlocks(blocks);
+        if (hash === lastLoopHash) {
+          idleRounds++;
+          await sleep(LOOP_GAP_MS);
+          continue;
+        }
+        lastLoopHash = hash;
+
+        // What did HUMANS change since the last look? (Our own edits advance
+        // the baseline right after executing, so they never show up here.)
+        const humanChanged = blocks.filter(
+          b => b.id && prevBlocks.get(b.id) !== b.markdown && b.markdown
+        );
+        // Ownership is revoked on human touch: it's their text now.
+        for (const b of humanChanged) ownBlocks.delete(b.id as string);
+        const changedIds = humanChanged.map(b => b.id as string);
+        prevBlocks = new Map(blocks.map(b => [b.id ?? '', b.markdown] as const));
+        const activeBlockId = changedIds[changedIds.length - 1] ?? null;
+
+        // Visible reaction FIRST — glide the caret next to where the human
+        // is working before the model call.
+        if (activeBlockId) {
+          const hit = session.findBlock(activeBlockId);
+          if (hit) {
+            session.broadcastCursor(
+              Math.min(hit.pos + hit.node.nodeSize, session.docEnd())
+            );
+          }
+        }
+
+        // Sticky asks: a rewrite/delete request stays live for the whole
+        // engagement so multi-round sweeps keep going.
+        const freshHuman = new Set(changedIds);
+        const freshText = humanChanged.map(b => b.markdown).join('\n');
+        if (
+          /にして|訳し|翻訳|直して|修正|書き換え|追加して|加えて|入れて|translate|rewrite|update|fix|add/i.test(
+            freshText
+          )
+        ) {
+          rewriteAskActive = true;
+        }
+        if (/消して|消せ|けして|削除|消去|delete|remove/i.test(freshText)) {
+          deleteAskActive = true;
+        }
+
+        const { thought, ops: rawOps } = await brain.think({
+          blocks,
+          changedIds,
+          activeBlockId,
+          ownBlockIds: [...ownBlocks],
+        });
+
+        // HARD GUARD: what the human just typed is untouchable. Append
+        // anywhere; revise/delete own blocks; replace/delete OLDER human
+        // blocks only while an explicit ask is live.
+        const ops = rawOps.filter(
+          op =>
+            op.action === 'append_after' ||
+            (op.blockId != null && ownBlocks.has(op.blockId)) ||
+            (op.action === 'replace' &&
+              op.blockId != null &&
+              !freshHuman.has(op.blockId) &&
+              rewriteAskActive) ||
+            (op.action === 'delete' &&
+              op.blockId != null &&
+              !freshHuman.has(op.blockId) &&
+              deleteAskActive)
+        );
+        if (ops.length < rawOps.length) {
+          log(`${tag} blocked ${rawOps.length - ops.length} op(s) targeting human text`);
+        }
+        // All ops blocked = usually round-1 freshness; retry a few rounds
+        // (the same op is legal once the text is no longer "just typed").
+        if (rawOps.length > 0 && ops.length === 0 && blockedRetries < 3) {
+          blockedRetries++;
+          idleRounds = 0;
+          lastLoopHash = ''; // force a fresh look next round
+          await sleep(LOOP_GAP_MS + 400);
+          continue;
+        }
+
+        if (ops.length > 0) {
+          log(`${tag} ${thought} → ${ops.length} op(s)`);
+          const before = new Map(
+            session.blocks().map(b => [b.id ?? '', b.markdown] as const)
+          );
+          session.setTyping(true);
+          await executeOps(session, ops);
+          session.setTyping(false);
+          trackOwn(before, ops, freshHuman);
+          // Fold our own edits into the baseline so the next round only sees
+          // genuine human changes.
+          prevBlocks = new Map(
+            session.blocks().map(b => [b.id ?? '', b.markdown] as const)
+          );
+          idleRounds = 0;
+          lastLoopHash = ''; // re-look immediately
+        } else {
+          idleRounds++;
+        }
+        await sleep(LOOP_GAP_MS);
+      }
+    } catch (err) {
+      log(`${tag} loop failed:`, err instanceof Error ? err.message : err);
+    } finally {
+      session.setTyping(false);
+      session.parkCursor();
+      busy = false;
+      armed = true;
+    }
+  };
+
   session.ydoc.on('update', (_update: Uint8Array, origin: unknown) => {
     if (!ready || destroyed) return;
     // Only remote (human) changes wake the agent; our own edits carry the
@@ -520,24 +397,18 @@ async function watchNote(
 
     anticipate();
 
-    // Leading edge: first keystroke of a burst engages the reflex work loop
-    // (which then keeps cycling on its own while the human writes).
-    if (fastArmed) {
-      fastArmed = false;
-      if (fastTimer) clearTimeout(fastTimer);
-      fastTimer = setTimeout(() => void fastLoop(), FAST_DELAY_MS);
+    if (armed) {
+      armed = false;
+      if (timer) clearTimeout(timer);
+      timer = setTimeout(() => void workLoop(), ENGAGE_DELAY_MS);
     }
-
-    // Trailing edge: the deep brain waits for the burst to settle.
-    scheduleDeep();
   });
 
   ready = true;
   return {
     destroy() {
       destroyed = true;
-      if (fastTimer) clearTimeout(fastTimer);
-      if (deepTimer) clearTimeout(deepTimer);
+      if (timer) clearTimeout(timer);
       session.destroy();
     },
   };
@@ -554,9 +425,7 @@ export async function main(): Promise<void> {
 
   try {
     const pong = await pingBrain();
-    log(
-      `brain OK (deep=${brainProvider()}:${brainModel()} fast=${fastProvider()}:${fastModel()}, reply="${pong}")`
-    );
+    log(`brain OK (${brainProvider()}:${brainModel()}, reply="${pong}")`);
   } catch (err) {
     log(
       `⚠ brain (${brainProvider()}) unreachable — the agent will join but cannot think:`,

@@ -42,10 +42,13 @@ export function brainProvider(): BrainProvider {
     cachedProvider = process.env.ANTHROPIC_API_KEY ? 'anthropic-api' : 'claude-cli';
   } else if (process.env.ANTHROPIC_API_KEY) {
     cachedProvider = 'anthropic-api';
+  } else if (process.env.GEMINI_API_KEY) {
+    // Single work loop = every round pays the brain's latency, so the default
+    // prefers a spawn-free API over the (slower) local CLI. Force the
+    // subscription CLI with AGENT_BRAIN=claude.
+    cachedProvider = 'gemini';
   } else if (hasClaudeCli()) {
     cachedProvider = 'claude-cli';
-  } else if (process.env.GEMINI_API_KEY) {
-    cachedProvider = 'gemini';
   } else {
     cachedProvider = 'claude-cli'; // ping will fail with a clear error
   }
@@ -63,35 +66,6 @@ export function brainModel(): string {
   }
 }
 
-/**
- * The reflex brain gets its OWN provider — it optimizes for raw latency, so
- * an API call (no process spawn) beats the CLI even when the deep brain runs
- * on the subscription. Priority: AGENT_FAST_BRAIN override > anthropic api >
- * gemini api > same CLI as the deep brain. One Cogno cursor either way.
- */
-export function fastProvider(): BrainProvider {
-  const pref = (process.env.AGENT_FAST_BRAIN || '').toLowerCase();
-  if (pref === 'gemini') return 'gemini';
-  if (pref === 'claude' || pref === 'anthropic') {
-    return process.env.ANTHROPIC_API_KEY ? 'anthropic-api' : 'claude-cli';
-  }
-  if (process.env.ANTHROPIC_API_KEY) return 'anthropic-api';
-  if (process.env.GEMINI_API_KEY) return 'gemini';
-  return brainProvider();
-}
-
-/** The reflex brain trades depth for latency — smallest capable model. */
-export function fastModel(): string {
-  if (process.env.AGENT_FAST_MODEL) return process.env.AGENT_FAST_MODEL;
-  switch (fastProvider()) {
-    case 'anthropic-api':
-      return 'claude-haiku-4-5-20251001';
-    case 'claude-cli':
-      return 'haiku';
-    case 'gemini':
-      return 'gemini-2.5-flash';
-  }
-}
 
 export type AgentAction = 'append_after' | 'replace' | 'delete';
 
@@ -186,7 +160,9 @@ const SYSTEM = `You are "Cogno AI", a realtime collaborator on a shared canvas d
 
 Context: this canvas is part of "Pillow", a realtime collaborative editor app (Next.js + TipTap + Y.js synced via a Hocuspocus WebSocket server; you are an AI client of that same server, thinking with Claude). When humans say "このアプリ" / "this app" they mean Pillow itself, not the Python imaging library.
 
-You receive the document as an ordered list of blocks, each with a stable blockId. This is a LIVE, ongoing collaboration: you remember your own earlier contributions from this conversation, so build on them and never repeat yourself. Decide one SMALL, genuinely helpful contribution reacting to the most recent human edits, and return edit operations.
+You receive the document as an ordered list of blocks, each with a stable blockId. This is a LIVE, ongoing collaboration: you remember your own earlier contributions from this conversation, so build on them and never repeat yourself. Humans are often STILL TYPING when you're called — react to where they're heading, and NEVER touch the block they're actively editing (activeBlockId); work after/below it or elsewhere.
+
+You run in a continuous work loop: another round follows IMMEDIATELY after this one. Do the most impactful 1-3 ops NOW with SHORT generated markdown — leave the rest for the next round, and return ops: [] once the work is complete. Scaffold early (a heading just appeared → skeleton below it), answer short questions in one line, start fulfilling instructions the moment their intent is clear (mid-sentence is fine).
 
 Operations:
 - append_after — insert new markdown after the block blockId (blockId null = end of document)
@@ -232,33 +208,6 @@ Direction following & self-revision:
 
 ${VISUAL_CONTRACT}`;
 
-/**
- * The reflex system prompt: fired while the human is STILL TYPING. One tiny,
- * immediately-useful action, never in their way.
- */
-const SYSTEM_FAST = `You are the reflexes of "Cogno AI", an AI collaborator inside a shared realtime document. A human is typing RIGHT NOW — you react while they write, like a colleague who starts scaffolding the moment they see where you're going.
-
-You get the document as blocks (each with a blockId) plus which block the human is actively editing. Decide ONE tiny action you can take IMMEDIATELY that helps without getting in their way:
-- They started a heading / list / section → scaffold it BELOW (skeleton bullets, an empty checklist, a starter table) so it's ready when they finish the line.
-- They're mid-list → add the obviously-missing next item(s).
-- A very short direct question appeared → answer in one line.
-- You spot a clear typo or a leftover empty fragment ELSEWHERE → fix/delete it.
-- They ask for a diagram/chart (図/棒グラフ/フロー/pie…) → produce it NOW as a \`\`\`mermaid fence: flowchart LR (quoted labels A["ラベル"]), sequenceDiagram, stateDiagram-v2, xychart-beta (bar/line: title "…" / x-axis [..] / y-axis "…" 0 --> 100 / bar [..]), or pie (lines "項目" : 40). Valid syntax only.
-- They ask to delete something (消して/削除/remove) → delete the TARGET blocks (never their instruction itself).
-
-Direction following (do this proactively, a piece at a time):
-- Infer where the human is heading from their newest keystrokes — language, tone, structure — and start pulling the rest of the document toward it NOW. If their fresh text is an instruction mid-sentence ("この文章を英語に…", "図をもっと…"), START FULFILLING IT IMMEDIATELY on the TARGET content — the target is usually elsewhere in the doc, not where they're typing.
-- Blocks you wrote earlier (listed as yours) are DRAFTS: revise or delete them as the human's continuing input makes them stale. Reworking your own stale block beats adding a new one.
-
-Hard rules:
-- HUMANS' WORDS ARE SACRED: never delete a human's block; rewrite one ONLY to fulfill their explicit rewrite/translate/fix/add request. Otherwise append, or revise/delete blocks listed as YOURS. (The executor enforces this; violating ops are dropped.)
-- NEVER touch the block the human is actively editing (activeBlockId) — work after/below it or elsewhere.
-- Empty paragraphs are normal breathing room — leave them alone (delete one only if YOU created it this session, at most once). Don't keep re-proposing cosmetic cleanups; fulfilling the human's requests always comes first.
-- At most 2 ops, at most ~60 words of new content. Smaller is better; [] is fine when nothing clearly helps RIGHT NOW (the deep brain handles the rest later).
-- Same language as the human's CURRENT writing. No filler, no meta-commentary.
-- Ops: append_after (blockId | null = end), replace, delete — with markdown content.
-
-${VISUAL_CONTRACT}`;
 
 function renderBlocks(blocks: BlockSnapshot[]): string {
   return (
@@ -422,14 +371,9 @@ export class CognoBrain {
     blocks: BlockSnapshot[];
     changedIds: string[];
     ownBlockIds?: string[];
-    /** Split passes: {n:1,of:2} = do the most impactful bit NOW, briefly. */
-    pass?: { n: number; of: number };
+    /** Block the human is editing right now — untouchable. */
+    activeBlockId?: string | null;
   }): Promise<BrainResult> {
-    const passNote = input.pass
-      ? input.pass.n < input.pass.of
-        ? `\nThis is pass ${input.pass.n} of ${input.pass.of} — another pass runs IMMEDIATELY after this one. Do only the most impactful 1-2 ops now and keep the generated markdown SHORT; leave the rest for the next pass.`
-        : `\nThis is the final pass ${input.pass.n} of ${input.pass.of} — finish what remains from your previous pass (or return ops: [] if the work is complete).`
-      : '';
     const userTurn = `Document blocks (top to bottom):
 
 ${renderBlocks(input.blocks)}
@@ -437,9 +381,10 @@ ${renderBlocks(input.blocks)}
 Blocks changed by humans since your last look: ${
       input.changedIds.length ? input.changedIds.join(', ') : '(unknown / first look)'
     }
+activeBlockId (human is typing here — do not touch): ${input.activeBlockId ?? '(none)'}
 Blocks YOU (Cogno) wrote earlier — drafts you may revise/delete: ${
       input.ownBlockIds?.length ? input.ownBlockIds.join(', ') : '(none yet)'
-    }${passNote}
+    }
 
 Respond with your decision as JSON.`;
 
@@ -484,9 +429,8 @@ Respond with your decision as JSON.`;
     this.history.push({ role: 'assistant', content: text });
     this.trimHistory();
 
-    // The deep brain may take up to 5 ops — whole-document restructures need
-    // more room than the reflex.
-    return { thought: parsed.thought ?? '', ops: validateOps(parsed, 5) };
+    // Short rounds: ≤3 ops per turn — the work loop calls again immediately.
+    return { thought: parsed.thought ?? '', ops: validateOps(parsed, 3) };
   }
 
   private async thinkGemini(): Promise<string> {
@@ -551,101 +495,6 @@ Respond with your decision as JSON.`;
  * The reflex brain: a single stateless, small-model call fired while the
  * human is still typing. Returns at most 2 tiny ops.
  */
-/**
- * Compact context for the reflex: full detail in a window around the active
- * block, one-line gists elsewhere — keeps the small model FAST while still
- * letting it target any block in the doc.
- */
-function renderBlocksWindow(
-  blocks: BlockSnapshot[],
-  activeBlockId: string | null
-): string {
-  if (!blocks.length) return '(document is empty)';
-  let center = blocks.findIndex(b => b.id === activeBlockId);
-  if (center < 0) center = blocks.length - 1;
-  const lo = Math.max(0, center - 4);
-  const hi = Math.min(blocks.length, center + 5);
-  return blocks
-    .map((b, i) =>
-      i >= lo && i < hi
-        ? `[${i}] id=${b.id ?? 'null'} type=${b.type}\n${(b.markdown || '(empty)').slice(0, 300)}`
-        : `[${i}] id=${b.id ?? 'null'} (${b.type}) ${b.markdown.slice(0, 60).replace(/\n/g, ' ')}`
-    )
-    .join('\n---\n');
-}
-
-export async function quickThink(input: {
-  blocks: BlockSnapshot[];
-  changedIds: string[];
-  activeBlockId: string | null;
-  ownBlockIds?: string[];
-}): Promise<BrainResult> {
-  const userTurn = `Document blocks (top to bottom; blocks near the human's activity are shown in full, others as one-line gists):
-
-${renderBlocksWindow(input.blocks, input.activeBlockId)}
-
-The human is ACTIVELY TYPING right now. activeBlockId (do not touch): ${
-    input.activeBlockId ?? '(unknown)'
-  }
-Recently changed blocks: ${input.changedIds.join(', ') || '(unknown)'}
-Blocks YOU (Cogno) wrote earlier — revise/delete freely: ${
-    input.ownBlockIds?.length ? input.ownBlockIds.join(', ') : '(none yet)'
-  }
-
-Respond with your decision as JSON.`;
-
-  const provider = fastProvider();
-  let text: string;
-  if (provider === 'anthropic-api') {
-    const client = new Anthropic({
-      apiKey: process.env.ANTHROPIC_API_KEY!,
-      dangerouslyAllowBrowser: true,
-    });
-    const message = await client.messages.create({
-      model: fastModel(),
-      max_tokens: 800,
-      output_config: {
-        effort: 'low',
-        format: { type: 'json_schema', schema: RESPONSE_SCHEMA },
-      },
-      system: [
-        { type: 'text', text: SYSTEM_FAST, cache_control: { type: 'ephemeral' } },
-      ],
-      messages: [{ role: 'user', content: userTurn }],
-    } as unknown as Anthropic.MessageCreateParamsNonStreaming);
-    text = textOf(message);
-  } else if (provider === 'gemini') {
-    const client = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY! });
-    const response = await client.models.generateContent({
-      model: fastModel(),
-      contents: userTurn,
-      config: {
-        systemInstruction: SYSTEM_FAST,
-        responseMimeType: 'application/json',
-        responseSchema: GEMINI_SCHEMA,
-        temperature: 0.4,
-        // Reflex = raw latency; no thinking budget.
-        thinkingConfig: { thinkingBudget: 0 },
-      },
-    });
-    text = response.text ?? '{}';
-  } else {
-    text = await runClaudeCli(
-      `${SYSTEM_FAST}\n\n---\n\n${userTurn}${CLI_JSON_INSTRUCTION}`,
-      60_000,
-      fastModel()
-    );
-  }
-
-  let parsed: { thought?: string; ops?: AgentOp[] };
-  try {
-    parsed = JSON.parse(provider === 'claude-cli' ? extractJson(text) : text);
-  } catch {
-    return { thought: 'reflex: unparseable — skipping', ops: [] };
-  }
-  return { thought: parsed.thought ?? '', ops: validateOps(parsed).slice(0, 2) };
-}
-
 /** One-shot connectivity check — is the configured brain reachable? */
 export async function pingBrain(): Promise<string> {
   switch (brainProvider()) {
