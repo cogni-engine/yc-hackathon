@@ -247,6 +247,7 @@ function getMermaidConfig(colorMode: MermaidColorMode): MermaidConfig {
     darkMode: colorMode === 'dark',
     securityLevel: 'strict',
     fontFamily: 'inherit',
+    fontSize: 13,
     htmlLabels: false,
     themeVariables: MERMAID_THEME_VARIABLES[colorMode],
     themeCSS: MERMAID_THEME_CSS,
@@ -254,17 +255,21 @@ function getMermaidConfig(colorMode: MermaidColorMode): MermaidConfig {
       // DOMPurify's SVG profile strips Mermaid's HTML labels in foreignObject.
       htmlLabels: false,
       curve: 'basis',
-      padding: 16,
-      nodeSpacing: 50,
-      rankSpacing: 60,
+      // Compact layout: tighter node/rank gaps than Mermaid's roomy defaults.
       useMaxWidth: true,
+      nodeSpacing: 30,
+      rankSpacing: 34,
+      padding: 6,
     },
     sequence: {
       useMaxWidth: true,
       diagramMarginX: 24,
       diagramMarginY: 16,
-      boxMargin: 12,
-      mirrorActors: true,
+      actorMargin: 36,
+      boxMargin: 8,
+      height: 40,
+      // Skip the duplicated actor row at the bottom to save vertical space.
+      mirrorActors: false,
     },
     er: { useMaxWidth: true },
     gantt: { useMaxWidth: true },
@@ -370,7 +375,7 @@ export function MermaidSvgViewer({
         type='button'
         onClick={() => setExpanded(true)}
         className={cn(
-          'group my-3 block w-full cursor-zoom-in overflow-x-auto rounded-xl border border-border-default bg-surface-secondary p-4 text-left transition-colors hover:border-border-strong focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent-primary/60 [&_svg]:h-auto [&_svg]:min-h-[200px] [&_svg]:w-full',
+          'group my-3 block max-h-[380px] w-full cursor-zoom-in overflow-auto rounded-xl border border-border-default bg-surface-secondary p-4 text-left transition-colors hover:border-border-strong focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent-primary/60 [&_svg]:mx-auto [&_svg]:h-auto [&_svg]:max-h-[340px] [&_svg]:w-full',
           className
         )}
         aria-label='Expand mermaid diagram'
