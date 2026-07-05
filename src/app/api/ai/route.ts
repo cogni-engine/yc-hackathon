@@ -4,7 +4,7 @@ import {
   type AiEditResponse,
   type AiEditStep,
 } from '@/features/canvas/aiEditSteps';
-import { gbrainQueryLogged } from '@/lib/gbrain';
+import { gbrainQuery } from '@/lib/gbrain';
 
 // Server-side only. Set GEMINI_API_KEY in the environment.
 export const runtime = 'nodejs';
@@ -171,7 +171,7 @@ export async function POST(req: Request) {
   // Retrieve relevant company-brain context from gbrain (best-effort: if the
   // bridge is down or empty we just proceed without it). This is the moment
   // gbrain's contents reach the AI — every /api/ai call queries the brain first.
-  const brain = await gbrainQueryLogged(selection ? `${prompt}\n\n${selection}` : prompt, 'query', 'ai');
+  const brain = await gbrainQuery(selection ? `${prompt}\n\n${selection}` : prompt, 'query');
   const brainBlock =
     brain.ok && brain.text
       ? `Relevant knowledge from the company brain (gbrain). Use it to ground your answer; cite page slugs when you rely on them:\n\n${brain.text}\n\n---\n\n`
