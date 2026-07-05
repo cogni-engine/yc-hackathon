@@ -7,7 +7,8 @@ import path from 'node:path';
  * setup. Minimal parser — KEY=VALUE lines, `#` comments, optional quotes.
  */
 export function loadEnv(): void {
-  const file = path.resolve(__dirname, '..', '.env.local');
+  // Run via `pnpm agent` from the repo root (ESM scope — no __dirname).
+  const file = path.resolve(process.cwd(), '.env.local');
   if (!fs.existsSync(file)) return;
 
   for (const line of fs.readFileSync(file, 'utf8').split('\n')) {
