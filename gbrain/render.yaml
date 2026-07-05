@@ -12,15 +12,12 @@ services:
     runtime: docker
     rootDir: gbrain
     dockerfilePath: ./Dockerfile
-    plan: starter # needs a paid plan for the persistent disk below
+    plan: free # no persistent disk (disks need a paid plan). The brain lives in
+    # Postgres, so nothing is lost: config.json is recreated on each cold start
+    # and `apply-migrations` is idempotent. Note: free web services sleep after
+    # ~15 min idle and cold-start in ~1 min. Bump to `starter` (+ a disk) for
+    # always-on.
     healthCheckPath: /health
-    # Keep ~/.gbrain (config.json) so init runs once. The brain data itself lives
-    # in Postgres; this disk only persists local config. Remove if on a free plan
-    # (init re-runs each deploy; apply-migrations keeps the schema intact).
-    disk:
-      name: gbrain-home
-      mountPath: /root/.gbrain
-      sizeGB: 1
     envVars:
       # Supabase connection string — click "Connect" in the dashboard and copy
       # the pooler URI. gbrain runs as a persistent server, so use the SESSION

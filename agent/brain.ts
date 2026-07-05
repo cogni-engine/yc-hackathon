@@ -67,14 +67,22 @@ export function brainModel(): string {
 }
 
 
-export type AgentAction = 'append_after' | 'replace' | 'delete';
+export type AgentAction = 'append_after' | 'replace' | 'delete' | 'generate_image';
 
 export interface AgentOp {
   action: AgentAction;
-  /** Target block. null + append_after = end of document. */
+  /** Target block. null + append_after/generate_image = end of document. */
   blockId: string | null;
   /** New content (markdown) for append_after / replace. */
   markdown?: string;
+  /** Complete visual prompt for generate_image. */
+  prompt?: string;
+  /** Short alt text for generate_image. */
+  alt?: string;
+  /** Optional aspect ratio for generate_image, e.g. 16:9, 1:1, 4:3. */
+  aspectRatio?: string;
+  /** Optional generated image size, e.g. 1K or 2K. */
+  imageSize?: string;
 }
 
 export interface BrainResult {
@@ -104,7 +112,7 @@ const RESPONSE_SCHEMA = {
         properties: {
           action: {
             type: 'string',
-            enum: ['append_after', 'replace', 'delete'],
+            enum: ['append_after', 'replace', 'delete', 'generate_image'],
           },
           blockId: {
             anyOf: [{ type: 'string' }, { type: 'null' }],
@@ -112,10 +120,26 @@ const RESPONSE_SCHEMA = {
           },
           markdown: {
             anyOf: [{ type: 'string' }, { type: 'null' }],
-            description: 'New markdown for append_after / replace; null for delete.',
+            description: 'New markdown for append_after / replace; null otherwise.',
+          },
+          prompt: {
+            anyOf: [{ type: 'string' }, { type: 'null' }],
+            description: 'Complete visual prompt for generate_image; null otherwise.',
+          },
+          alt: {
+            anyOf: [{ type: 'string' }, { type: 'null' }],
+            description: 'Short alt text for generate_image; null otherwise.',
+          },
+          aspectRatio: {
+            anyOf: [{ type: 'string' }, { type: 'null' }],
+            description: 'Aspect ratio for generate_image: 1:1, 16:9, 9:16, 4:3, 3:4.',
+          },
+          imageSize: {
+            anyOf: [{ type: 'string' }, { type: 'null' }],
+            description: 'Image size for generate_image: 512, 1K, 2K.',
           },
         },
-        required: ['action', 'blockId', 'markdown'],
+        required: ['action', 'blockId', 'markdown', 'prompt', 'alt', 'aspectRatio', 'imageSize'],
       },
     },
   },
@@ -144,10 +168,14 @@ const GEMINI_SCHEMA = {
         properties: {
           action: {
             type: Type.STRING,
-            enum: ['append_after', 'replace', 'delete'],
+            enum: ['append_after', 'replace', 'delete', 'generate_image'],
           },
           blockId: { type: Type.STRING, nullable: true },
           markdown: { type: Type.STRING, nullable: true },
+          prompt: { type: Type.STRING, nullable: true },
+          alt: { type: Type.STRING, nullable: true },
+          aspectRatio: { type: Type.STRING, nullable: true },
+          imageSize: { type: Type.STRING, nullable: true },
         },
         required: ['action'],
       },
@@ -168,6 +196,7 @@ Operations:
 - append_after — insert new markdown after the block blockId (blockId null = end of document)
 - replace — replace block blockId entirely with new markdown
 - delete — remove block blockId
+- generate_image — generate one image with the image tool and insert it after blockId (blockId null = end of document). Use when the human explicitly asks for an image/illustration/picture/画像/画面案, or is wondering how a UI/layout should look — then produce ONE polished concept image. The prompt must be a complete visual prompt (subject, style, composition, relevant document context); include concise alt text. NEVER invent image URLs or write markdown image links yourself.
 
 Behavior — you are an ACTIVE collaborator (this is a live demo; lean toward acting):
 - If a human addresses you in the recent changes (your name, "Cogno", "AI(さん)", or any question / request / 依頼) you MUST respond with at least one op. Even if you answered something similar before, answer again — better, or adapted to what they just wrote. Never leave a direct address unanswered.
@@ -231,15 +260,40 @@ function textOf(message: Anthropic.Message): string {
 
 function validateOps(raw: unknown, max = 3): AgentOp[] {
   const ops = Array.isArray((raw as { ops?: unknown })?.ops)
-    ? ((raw as { ops: unknown[] }).ops as AgentOp[])
+    ? ((raw as { ops: unknown[] }).ops as unknown[])
     : [];
   return ops
-    .filter(
-      (op): op is AgentOp =>
-        !!op &&
-        ['append_after', 'replace', 'delete'].includes(op.action) &&
-        (op.action === 'delete' || typeof op.markdown === 'string')
-    )
+    .map((op): AgentOp | null => {
+      if (!op || typeof op !== 'object') return null;
+      const rawOp = op as Record<string, unknown>;
+      const action = rawOp.action;
+      if (
+        action !== 'append_after' &&
+        action !== 'replace' &&
+        action !== 'delete' &&
+        action !== 'generate_image'
+      ) {
+        return null;
+      }
+      const blockId = typeof rawOp.blockId === 'string' ? rawOp.blockId : null;
+      if (action === 'delete') return { action, blockId };
+      if (action === 'generate_image') {
+        if (typeof rawOp.prompt !== 'string' || !rawOp.prompt.trim()) return null;
+        return {
+          action,
+          blockId,
+          prompt: rawOp.prompt.trim(),
+          alt: typeof rawOp.alt === 'string' ? rawOp.alt.trim() : undefined,
+          aspectRatio:
+            typeof rawOp.aspectRatio === 'string' ? rawOp.aspectRatio.trim() : undefined,
+          imageSize:
+            typeof rawOp.imageSize === 'string' ? rawOp.imageSize.trim() : undefined,
+        };
+      }
+      if (typeof rawOp.markdown !== 'string') return null;
+      return { action, blockId, markdown: rawOp.markdown };
+    })
+    .filter((op): op is AgentOp => op !== null)
     .slice(0, max);
 }
 

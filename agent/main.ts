@@ -7,6 +7,11 @@ import {
   type AgentOp,
 } from './brain';
 import { listNotes } from './notes';
+import { generateAndStoreImage } from '../src/lib/ai/generatedImages';
+
+function normalizeAltText(value: string): string {
+  return value.replace(/\s+/g, ' ').trim();
+}
 
 // ONE work loop per note. It engages ~350ms after a human's first keystroke
 // and keeps cycling — look → think briefly → edit → look again — until a
@@ -148,6 +153,39 @@ async function executeOps(session: AgentSession, ops: AgentOp[]): Promise<void> 
           if (!hit) break;
           await session.moveCursorTo(hit.pos + hit.node.nodeSize - 1, 200);
           await session.deleteBlockBackwards(op.blockId);
+          break;
+        }
+        case 'generate_image': {
+          const prompt = op.prompt?.trim();
+          if (!prompt) {
+            log('op generate_image skipped: missing prompt');
+            break;
+          }
+          let pos = session.docEnd();
+          if (lastAppend && lastAppend.blockId === op.blockId) {
+            pos = Math.min(lastAppend.end, session.docEnd());
+          } else if (op.blockId) {
+            const hit = session.findBlock(op.blockId);
+            if (hit) pos = hit.pos + hit.node.nodeSize;
+          }
+          await session.moveCursorTo(pos, 200);
+          log('generating image…');
+          const image = await generateAndStoreImage({
+            apiKey: process.env.GEMINI_API_KEY,
+            prompt,
+            context: session.markdown(),
+            aspectRatio: op.aspectRatio,
+            imageSize: op.imageSize,
+          });
+          const alt = normalizeAltText(
+            op.alt || image.alt || prompt || 'Generated image'
+          );
+          const end = session.insertImageAt(pos, { src: image.src, alt });
+          if (end === pos) {
+            throw new Error('image insert did not change the document');
+          }
+          session.broadcastCursor(end);
+          lastAppend = { blockId: op.blockId, end };
           break;
         }
       }
@@ -335,6 +373,7 @@ async function watchNote(
         const ops = rawOps.filter(
           op =>
             op.action === 'append_after' ||
+            op.action === 'generate_image' ||
             (op.blockId != null && ownBlocks.has(op.blockId)) ||
             (op.action === 'replace' &&
               op.blockId != null &&

@@ -388,6 +388,22 @@ export class AgentSession {
     return pos + (this.editor.state.doc.content.size - before);
   }
 
+  /** Insert a generated image (wrapped in a paragraph); returns the end position. */
+  insertImageAt(pos: number, attrs: { src: string; alt?: string | null }): number {
+    return this.insertNodeAt(pos, {
+      type: 'paragraph',
+      content: [
+        {
+          type: 'image',
+          attrs: {
+            src: attrs.src,
+            alt: attrs.alt ?? null,
+          },
+        },
+      ],
+    });
+  }
+
   /** End position of the last text character inside a block, or null. */
   private lastTextEnd(blockId: string): number | null {
     const hit = this.findBlock(blockId);
