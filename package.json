@@ -6,7 +6,8 @@
   "scripts": {
     "dev": "next dev",
     "build": "next build",
-    "start": "next start"
+    "start": "next start",
+    "agent": "tsx agent/index.ts"
   },
   "dependencies": {
     "@excalidraw/excalidraw": "^0.18.1",
@@ -28,9 +29,11 @@
     "@tiptap/react": "^3.13.0",
     "@tiptap/starter-kit": "^3.13.0",
     "@tiptap/suggestion": "^3.13.0",
+    "@tiptap/y-tiptap": "^3.0.6",
     "class-variance-authority": "^0.7.1",
     "clsx": "^2.1.1",
     "dompurify": "^3.4.0",
+    "jsdom": "^29.1.1",
     "lowlight": "^3.3.0",
     "lucide-react": "^0.545.0",
     "mermaid": "^11.12.3",
@@ -40,16 +43,18 @@
     "react-dom": "19.2.4",
     "tailwind-merge": "^2.5.1",
     "tippy.js": "^6.3.7",
-    "ws": "^8.18.0",
+    "ws": "^8.21.0",
     "yjs": "^13.6.18"
   },
   "devDependencies": {
     "@tailwindcss/postcss": "^4",
+    "@types/jsdom": "^28.0.3",
     "@types/node": "^20",
     "@types/react": "^19",
     "@types/react-dom": "^19",
-    "@types/ws": "^8.5.13",
+    "@types/ws": "^8.18.1",
     "tailwindcss": "^4",
+    "tsx": "^4.23.0",
     "typescript": "^5"
   }
 }
