@@ -22,14 +22,23 @@ Collaboration (Y.js), the slash (`/`) block menu, tables, Mermaid diagrams,
   a 1–2 sentence summary as a blockquote right after it. The insert flows through
   the shared Y.Doc, so everyone sees it.
 
+- **AI collaborator** — run `pnpm agent` and "Cogno AI" joins the room as a real
+  realtime collaborator: its own named caret (green), human-like cursor moves,
+  text typed character-by-character, Mermaid diagrams dropped in as blocks, and
+  select-hold-delete edits. It watches the doc, thinks with Gemini, and edits
+  through the exact same Y.js/WebSocket path as a human tab.
+
 ## Architecture
 
 Two servers. No database.
 
 ```
-browser
-  ├─ HTTP ─────▶ ① Next.js app (UI + /api/ai → Gemini)   :3000  (deploy: Vercel)
-  └─ WebSocket ▶ ② Hocuspocus realtime server            :1234  (deploy: Render)
+browser ──┬─ HTTP ─────▶ ① Next.js app (UI + /api/ai → Gemini)   :3000  (deploy: Vercel)
+          └─ WebSocket ▶ ② Hocuspocus realtime server            :1234  (deploy: Render)
+                              ▲
+③ AI agent (pnpm agent) ──────┘  headless TipTap client + Gemini — joins rooms
+                                 like any other collaborator (awareness cursor,
+                                 CRDT edits), zero changes to ① or ②
 ```
 
 - **① Next.js app** (repo root) — serves the editor UI and the `/api/ai` route,
@@ -82,6 +91,35 @@ pnpm dev                   # http://localhost:3000
 ```
 
 `.env.local` already points the app at `ws://localhost:1234`.
+
+## AI collaborator agent
+
+```bash
+pnpm agent            # joins room "main"
+pnpm agent my-room    # joins /canvas/my-room
+```
+
+Cogno AI connects to the Hocuspocus server as a normal WebSocket client
+(headless TipTap under jsdom, schema-identical to the browser editor) and
+behaves like a human teammate:
+
+- **Presence** — a named green caret via the same y-protocols awareness the
+  browser's CollaborationCaret renders. No frontend changes needed.
+- **Trigger** — waits until humans stop typing (~2.5s), reads the doc as
+  blockId-addressed markdown, asks Gemini (structured JSON ops), then edits.
+- **Choreography** — caret moves & settles before writing; prose is typed
+  character-by-character; structured blocks (```mermaid, lists, tables) drop in
+  whole; deletions select-hold-then-delete so humans see what's happening.
+- Env (auto-read from `.env.local`): `GEMINI_API_KEY` (required),
+  `NEXT_PUBLIC_HOCUSPOCUS_URL`/`AGENT_HOCUSPOCUS_URL`, `GEMINI_MODEL`,
+  `AGENT_ROOM`, `AGENT_NAME`, `AGENT_COLOR`.
+
+E2E smoke test without a browser — a scripted "fake human" types a question
+and reports the AI's presence + edits:
+
+```bash
+npx tsx agent/tools/fake-human.ts some-empty-room
+```
 
 > Don't run `docker compose` and `pnpm dev` at the same time — they bind the same
 > ports (3000 / 1234). If port 1234 is taken (e.g. another Hocuspocus running),
