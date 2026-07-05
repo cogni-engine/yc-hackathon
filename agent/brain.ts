@@ -27,6 +27,14 @@ export function brainModel(): string {
   );
 }
 
+/** The reflex brain trades depth for latency — smallest capable model. */
+export function fastModel(): string {
+  return (
+    process.env.AGENT_FAST_MODEL ||
+    (brainMode() === 'api' ? 'claude-haiku-4-5-20251001' : 'haiku')
+  );
+}
+
 export type AgentAction = 'append_after' | 'replace' | 'delete';
 
 export interface AgentOp {
@@ -82,6 +90,16 @@ const RESPONSE_SCHEMA = {
   required: ['thought', 'ops'],
 } as const;
 
+/**
+ * Shared appearance contract — injected into BOTH brains. The user cares
+ * about the note always LOOKING good more than anything else.
+ */
+const VISUAL_CONTRACT = `Document appearance contract (HIGHEST priority — the note must always LOOK clean):
+- No runs of empty paragraphs (at most one blank between sections). Stray fragments and leftover empty blocks should be deleted.
+- Clear hierarchy: headings for sections, lists for enumerations, short paragraphs (≤3 sentences). Prefer restructuring a wall of text into a list.
+- Diagrams stay compact (flowchart LR, ≤8 nodes, short labels); never two diagrams about the same thing — edit the existing one.
+- Everything you add must leave the document tidier than you found it.`;
+
 const SYSTEM = `You are "Cogno AI", a realtime collaborator on a shared canvas document — a teammate with a visible cursor, not a chatbot. Humans see your caret move, your text being typed, your selections before deletions.
 
 Context: this canvas is part of "Pillow", a realtime collaborative editor app (Next.js + TipTap + Y.js synced via a Hocuspocus WebSocket server; you are an AI client of that same server, thinking with Claude). When humans say "このアプリ" / "this app" they mean Pillow itself, not the Python imaging library.
@@ -110,7 +128,31 @@ Hard rules:
 - To MODIFY an existing diagram, use replace on that mermaid block with the complete new \`\`\`mermaid fence, keeping unchanged lines byte-identical — only changed lines animate (parts of the diagram visibly erased/redrawn). Prefer editing an existing diagram over adding a second one about the same thing.
 - delete/replace when asked (explicitly or clearly implied: duplicates, obsolete/done items, content the humans marked as wrong). Don't delete substance you merely disagree with.
 - Ops apply strictly top-to-bottom; two append_after on the same blockId keep their order (the second lands after the first's content). Prefer ONE append_after containing all of your new content (prose AND fences together, in reading order) over multiple ops.
-- NEVER open with filler acknowledgments ("承知しました", "わかりました", "Sure!", "説明します"). Start directly with the substance, like edits in a shared doc — not chat. No meta-commentary about being an AI.`;
+- NEVER open with filler acknowledgments ("承知しました", "わかりました", "Sure!", "説明します"). Start directly with the substance, like edits in a shared doc — not chat. No meta-commentary about being an AI.
+
+You also OWN the document's overall visual quality. When the doc has grown messy (stray fragments, empty-paragraph runs, inconsistent headings, redundant blocks), tidying it up IS a valuable contribution on its own — do it without being asked.
+
+${VISUAL_CONTRACT}`;
+
+/**
+ * The reflex system prompt: fired while the human is STILL TYPING. One tiny,
+ * immediately-useful action, never in their way.
+ */
+const SYSTEM_FAST = `You are the reflexes of "Cogno AI", an AI collaborator inside a shared realtime document. A human is typing RIGHT NOW — you react while they write, like a colleague who starts scaffolding the moment they see where you're going.
+
+You get the document as blocks (each with a blockId) plus which block the human is actively editing. Decide ONE tiny action you can take IMMEDIATELY that helps without getting in their way:
+- They started a heading / list / section → scaffold it BELOW (skeleton bullets, an empty checklist, a starter table) so it's ready when they finish the line.
+- They're mid-list → add the obviously-missing next item(s).
+- A very short direct question appeared → answer in one line.
+- You spot a clear typo or a leftover empty fragment ELSEWHERE → fix/delete it.
+
+Hard rules:
+- NEVER touch the block the human is actively editing (activeBlockId) — work after/below it or elsewhere.
+- At most 2 ops, at most ~40 words of new content. Smaller is better; [] is fine when nothing clearly helps RIGHT NOW (the deep brain handles the rest later).
+- Same language as the document. No filler, no meta-commentary.
+- Ops: append_after (blockId | null = end), replace, delete — with markdown content.
+
+${VISUAL_CONTRACT}`;
 
 function renderBlocks(blocks: BlockSnapshot[]): string {
   return (
@@ -171,14 +213,18 @@ Output format — reply with ONLY a JSON object, no prose, no code fences:
 {"thought": "<one short sentence>", "ops": [{"action": "append_after" | "replace" | "delete", "blockId": "<id or null>", "markdown": "<markdown or null>"}]}`;
 
 /** One-shot generation through the local \`claude\` CLI (subscription auth). */
-function runClaudeCli(prompt: string, timeoutMs = 120_000): Promise<string> {
+function runClaudeCli(
+  prompt: string,
+  timeoutMs = 120_000,
+  model = brainModel()
+): Promise<string> {
   return new Promise((resolve, reject) => {
     const child = spawn(
       'claude',
       [
         '-p',
         '--model',
-        brainModel(),
+        model,
         '--output-format',
         'json',
         '--max-turns',
@@ -347,6 +393,62 @@ Respond with your decision as JSON.`;
       this.history.shift();
     }
   }
+}
+
+/**
+ * The reflex brain: a single stateless, small-model call fired while the
+ * human is still typing. Returns at most 2 tiny ops.
+ */
+export async function quickThink(input: {
+  blocks: BlockSnapshot[];
+  changedIds: string[];
+  activeBlockId: string | null;
+}): Promise<BrainResult> {
+  const userTurn = `Document blocks (top to bottom):
+
+${renderBlocks(input.blocks)}
+
+The human is ACTIVELY TYPING right now. activeBlockId (do not touch): ${
+    input.activeBlockId ?? '(unknown)'
+  }
+Recently changed blocks: ${input.changedIds.join(', ') || '(unknown)'}
+
+Respond with your decision as JSON.`;
+
+  let text: string;
+  if (process.env.ANTHROPIC_API_KEY) {
+    const client = new Anthropic({
+      apiKey: process.env.ANTHROPIC_API_KEY,
+      dangerouslyAllowBrowser: true,
+    });
+    const message = await client.messages.create({
+      model: fastModel(),
+      max_tokens: 800,
+      output_config: {
+        effort: 'low',
+        format: { type: 'json_schema', schema: RESPONSE_SCHEMA },
+      },
+      system: [
+        { type: 'text', text: SYSTEM_FAST, cache_control: { type: 'ephemeral' } },
+      ],
+      messages: [{ role: 'user', content: userTurn }],
+    } as unknown as Anthropic.MessageCreateParamsNonStreaming);
+    text = textOf(message);
+  } else {
+    text = await runClaudeCli(
+      `${SYSTEM_FAST}\n\n---\n\n${userTurn}${CLI_JSON_INSTRUCTION}`,
+      60_000,
+      fastModel()
+    );
+  }
+
+  let parsed: { thought?: string; ops?: AgentOp[] };
+  try {
+    parsed = JSON.parse(process.env.ANTHROPIC_API_KEY ? text : extractJson(text));
+  } catch {
+    return { thought: 'reflex: unparseable — skipping', ops: [] };
+  }
+  return { thought: parsed.thought ?? '', ops: validateOps(parsed).slice(0, 2) };
 }
 
 /** One-shot connectivity check — is Claude reachable in the active mode? */
