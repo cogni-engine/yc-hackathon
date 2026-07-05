@@ -95,7 +95,7 @@ export function NotesList() {
     if (!window.confirm('Delete this note?')) return;
     setNotes(prev => prev.filter(n => n.id !== id));
     await softDeleteNote(id);
-    if (id === activeId) router.push('/');
+    if (id === activeId) router.push('/notes');
   }
 
   return (
