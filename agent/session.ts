@@ -116,6 +116,39 @@ export class AgentSession {
     this.setPresence();
   }
 
+  private focusToken = 0;
+
+  /**
+   * Highlight the block the AI is working on (frontend draws a colored ring
+   * via AiFocusExtension). state 'done' auto-clears after a short fade.
+   */
+  setFocus(blockId: string | null, state: 'editing' | 'done' = 'editing'): void {
+    const token = ++this.focusToken;
+    this.provider.setAwarenessField(
+      'aiFocus',
+      blockId ? { blockId, state, color: this.opts.color } : null
+    );
+    if (blockId && state === 'done') {
+      setTimeout(() => {
+        if (this.focusToken === token) {
+          this.provider.setAwarenessField('aiFocus', null);
+        }
+      }, 2000);
+    }
+  }
+
+  /** blockId of the top-level block containing `pos`, if any. */
+  blockIdAt(pos: number): string | null {
+    let found: string | null = null;
+    this.editor.state.doc.forEach((node, offset) => {
+      if (found) return;
+      if (pos >= offset && pos <= offset + node.nodeSize) {
+        found = (node.attrs?.blockId as string | undefined) ?? null;
+      }
+    });
+    return found;
+  }
+
   // ---------------------------------------------------------------- reading
 
   /** Whole document as markdown (same serializer as the browser editor). */
@@ -355,7 +388,7 @@ export class AgentSession {
     return pos + (this.editor.state.doc.content.size - before);
   }
 
-  /** Insert an inline editor image wrapped in a paragraph. */
+  /** Insert a generated image (wrapped in a paragraph); returns the end position. */
   insertImageAt(pos: number, attrs: { src: string; alt?: string | null }): number {
     return this.insertNodeAt(pos, {
       type: 'paragraph',
@@ -490,6 +523,8 @@ export class AgentSession {
       attrs: { language: 'mermaid' },
     });
     if (shellEnd === pos) return pos;
+    const focusId = this.blockIdAt(pos);
+    if (focusId) this.setFocus(focusId, 'editing');
 
     let cur = pos + 1; // inside the code block
     let rel = this.absToRel(cur);
@@ -505,6 +540,8 @@ export class AgentSession {
       this.broadcastCursor(cur);
       await sleep(jitter(320, 260));
     }
+    const doneId = this.blockIdAt(Math.max(0, cur - 1));
+    if (doneId) this.setFocus(doneId, 'done');
     return cur + 1; // past the code block's closing token
   }
 
@@ -522,6 +559,7 @@ export class AgentSession {
     ) {
       return false;
     }
+    this.setFocus(blockId, 'editing');
 
     const fenceLines = newFence.trim().split('\n');
     const newBody =
@@ -544,6 +582,10 @@ export class AgentSession {
     }
     const removed = oldBody.length - p - s;
     const added = newBody.slice(p, newBody.length - s);
+    if (removed === 0 && added.length === 0) {
+      this.setFocus(blockId, 'done');
+      return true;
+    }
 
     /** Absolute [from,to] of line k inside the (re-resolved) block. */
     const lineRange = (k: number): { from: number; to: number } | null => {
@@ -601,6 +643,7 @@ export class AgentSession {
       await sleep(jitter(320, 260));
     }
 
+    this.setFocus(blockId, 'done');
     return true;
   }
 

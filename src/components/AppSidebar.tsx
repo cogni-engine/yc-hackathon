@@ -2,7 +2,8 @@
 
 import Link from 'next/link';
 import { usePathname } from 'next/navigation';
-import { FileText, PencilRuler, Plug } from 'lucide-react';
+import { useState } from 'react';
+import { ChevronRight, FileText, PencilRuler, Plug } from 'lucide-react';
 import { NotesList } from '@/features/notes/NotesList';
 import { integrationTools } from '@/features/integrations/tools';
 
@@ -18,27 +19,70 @@ function isActiveTab(pathname: string, href: string) {
   return pathname === href || pathname.startsWith(`${href}/`);
 }
 
-function SidebarIntegrations() {
-  return (
-    <nav className='border-t border-border-default px-2 py-3'>
-      <div className='space-y-1'>
-        {integrationTools.map(tool => {
-          const Icon = tool.Icon;
+/**
+ * Quiet integrations entry: a single collapsed "Integrations" row; expanding
+ * reveals a muted preview of a few tools (Slack etc.) plus a link to the
+ * full page — the tool list shouldn't compete with the notes.
+ */
+function SidebarIntegrations({ active }: { active: boolean }) {
+  const [open, setOpen] = useState(false);
+  const preview = integrationTools.slice(0, 5);
+  // Mock connection state for the demo — the first few read as already wired.
+  const connected = new Set(integrationTools.slice(0, 4).map(t => t.name));
 
-          return (
-            <Link
-              key={tool.name}
-              href='/integrations'
-              className='flex min-w-0 items-center gap-2 rounded-md px-2 py-1.5 text-sm text-text-secondary transition-colors hover:bg-interactive-hover hover:text-text-primary'
-            >
-              <span className='inline-flex size-5 shrink-0 items-center justify-center'>
-                <Icon className='size-4' />
-              </span>
-              <span className='min-w-0 truncate'>{tool.name}</span>
-            </Link>
-          );
-        })}
-      </div>
+  return (
+    <nav className='px-2 pb-1'>
+      <button
+        type='button'
+        onClick={() => setOpen(v => !v)}
+        aria-expanded={open}
+        className={`flex w-full min-w-0 items-center gap-1.5 rounded-md px-2 py-1.5 text-sm font-medium transition-colors ${
+          active
+            ? 'bg-surface-secondary text-text-primary'
+            : 'text-text-secondary hover:bg-interactive-hover hover:text-text-primary'
+        }`}
+      >
+        <Plug className='size-3.5 shrink-0' />
+        <span className='min-w-0 flex-1 truncate text-left'>Integrations</span>
+        <ChevronRight
+          className={`size-3.5 shrink-0 opacity-60 transition-transform ${
+            open ? 'rotate-90' : ''
+          }`}
+        />
+      </button>
+      {open && (
+        <div className='mt-1 space-y-0.5 pl-2'>
+          {preview.map(tool => {
+            const Icon = tool.Icon;
+            return (
+              <Link
+                key={tool.name}
+                href='/integrations'
+                className='flex min-w-0 items-center gap-2 rounded-md px-2 py-1 text-[13px] text-text-secondary transition-colors hover:bg-interactive-hover hover:text-text-primary'
+              >
+                <span className='inline-flex size-4 shrink-0 items-center justify-center'>
+                  <Icon className='size-3.5' />
+                </span>
+                <span className='min-w-0 flex-1 truncate'>{tool.name}</span>
+                {connected.has(tool.name) && (
+                  <span className='shrink-0 rounded-full border border-border-default px-1.5 py-px text-[10px] leading-4 text-text-secondary opacity-70'>
+                    Connected
+                  </span>
+                )}
+              </Link>
+            );
+          })}
+          <Link
+            href='/integrations'
+            className='flex items-center gap-2 rounded-md px-2 py-1 text-[13px] text-text-secondary transition-colors hover:bg-interactive-hover hover:text-text-primary'
+          >
+            <span className='inline-flex size-4 shrink-0 items-center justify-center'>
+              …
+            </span>
+            <span>View all</span>
+          </Link>
+        </div>
+      )}
     </nav>
   );
 }
@@ -76,23 +120,10 @@ export function AppSidebar() {
           );
         })}
       </nav>
-      <div className='min-h-0 flex-1'>
+      <SidebarIntegrations active={integrationsActive} />
+      <div className='min-h-0 flex-1 border-t border-border-default'>
         <NotesList />
       </div>
-      <SidebarIntegrations />
-      <nav className='border-t border-border-default px-2 py-3'>
-        <Link
-          href='/integrations'
-          className={`flex min-w-0 items-center gap-1.5 rounded-md px-2 py-1.5 text-sm transition-colors ${
-            integrationsActive
-              ? 'bg-surface-secondary text-text-primary'
-              : 'text-text-secondary hover:bg-interactive-hover hover:text-text-primary'
-          }`}
-        >
-          <Plug className='size-3.5 shrink-0' />
-          <span className='min-w-0 truncate'>Integrations</span>
-        </Link>
-      </nav>
     </aside>
   );
 }

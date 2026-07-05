@@ -131,6 +131,75 @@ export function CollaborativeEditorStyles() {
         }
       }
 
+      /* AI focus ring: block-level highlight for the block the AI agent is
+         editing (driven by the aiFocus awareness field via AiFocusExtension).
+         The ring color arrives per-block through --ai-focus-color. */
+      .ProseMirror .ai-focus {
+        border-radius: 8px;
+        transition: box-shadow 0.25s ease;
+      }
+
+      .ProseMirror .ai-focus--editing {
+        box-shadow:
+          0 0 0 2px var(--ai-focus-color, #0ea5e9),
+          0 0 12px 0
+            color-mix(in srgb, var(--ai-focus-color, #0ea5e9) 35%, transparent);
+        animation: ai-focus-pulse 2s ease-in-out infinite;
+      }
+
+      /* Subtle breathing of the outer glow while the AI works */
+      @keyframes ai-focus-pulse {
+        0%,
+        100% {
+          box-shadow:
+            0 0 0 2px var(--ai-focus-color, #0ea5e9),
+            0 0 12px 0
+              color-mix(
+                in srgb,
+                var(--ai-focus-color, #0ea5e9) 35%,
+                transparent
+              );
+        }
+        50% {
+          box-shadow:
+            0 0 0 2px
+              color-mix(
+                in srgb,
+                var(--ai-focus-color, #0ea5e9) 70%,
+                transparent
+              ),
+            0 0 18px 2px
+              color-mix(
+                in srgb,
+                var(--ai-focus-color, #0ea5e9) 20%,
+                transparent
+              );
+        }
+      }
+
+      /* Done: start from the editing ring, fade out and stay transparent */
+      .ProseMirror .ai-focus--done {
+        animation: ai-focus-fade 1.6s ease-out forwards;
+      }
+
+      @keyframes ai-focus-fade {
+        0% {
+          box-shadow:
+            0 0 0 2px var(--ai-focus-color, #0ea5e9),
+            0 0 12px 0
+              color-mix(
+                in srgb,
+                var(--ai-focus-color, #0ea5e9) 35%,
+                transparent
+              );
+        }
+        100% {
+          box-shadow:
+            0 0 0 2px transparent,
+            0 0 12px 0 transparent;
+        }
+      }
+
       /* Collaborator avatars in header */
       .collaborator-badge {
         display: inline-flex;

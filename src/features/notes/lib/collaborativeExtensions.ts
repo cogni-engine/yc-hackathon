@@ -14,6 +14,7 @@ import { HocuspocusProvider } from '@hocuspocus/provider';
 import * as Y from 'yjs';
 import { BlockIdExtension } from '@/lib/tiptap/BlockIdExtension';
 import { AiCursorExtension } from './AiCursorExtension';
+import { AiFocusExtension } from './AiFocusExtension';
 import { MermaidCodeBlock } from '@/features/tasks/components/MermaidCodeBlock';
 import { ExcalidrawBlock } from '@/features/tasks/components/ExcalidrawBlock';
 import { IframeEmbedBlock } from '@/features/tasks/components/IframeEmbedBlock';
@@ -228,6 +229,12 @@ export function createCollaborativeExtensions({
     // Shared AI cursor. AI routines can drive it with showAiCursor/moveAiCursor
     // while actual edits continue to sync through Y.js.
     AiCursorExtension.configure({ ydoc }),
+
+    // AI focus ring: highlights the block the AI agent broadcasts via the
+    // `aiFocus` awareness field (editing ring, then a brief fade when done).
+    // Provider may be null on first render; the extension no-ops until the
+    // editor rebuilds with a live provider (same lifecycle as the caret above).
+    AiFocusExtension.configure({ provider }),
 
     // Mermaid-rendering code block (replaces StarterKit's codeBlock).
     MermaidCodeBlock,
