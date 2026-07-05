@@ -22,9 +22,11 @@ services:
       mountPath: /root/.gbrain
       sizeGB: 1
     envVars:
-      # Supabase transaction pooler string (Dashboard → Settings → Database →
-      # Connection string → Transaction pooler). Keep :6543 and ?prepare=false.
-      #   postgresql://postgres.<ref>:<pwd>@aws-0-<region>.pooler.supabase.com:6543/postgres?prepare=false
+      # Supabase connection string — click "Connect" in the dashboard and copy
+      # the pooler URI. gbrain runs as a persistent server, so use the SESSION
+      # pooler (port 5432); it supports prepared statements (no ?prepare=false).
+      #   postgresql://postgres.<ref>:<pwd>@aws-<n>-<region>.pooler.supabase.com:5432/postgres
+      # (If you use the transaction pooler at :6543 instead, append ?prepare=false.)
       - key: DATABASE_URL
         sync: false
       # Embedding + chat key (Gemini AI Studio key; reused for embeddings).
