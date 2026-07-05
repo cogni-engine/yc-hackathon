@@ -2,11 +2,12 @@
 
 import Link from 'next/link';
 import { usePathname } from 'next/navigation';
-import { FileText, Plug } from 'lucide-react';
+import { FileText, PencilRuler, Plug } from 'lucide-react';
 import { NotesList } from '@/features/notes/NotesList';
 
 const tabs = [
   { href: '/notes', label: 'Notes', icon: FileText },
+  { href: '/mermaid', label: 'Diagrams', icon: PencilRuler },
 ];
 
 function isActiveTab(pathname: string, href: string) {
