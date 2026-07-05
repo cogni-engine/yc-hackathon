@@ -12,7 +12,10 @@ export interface NoteRow {
   updated_at: string;
 }
 
+let cached: ReturnType<typeof createClient> | null = null;
+
 function client() {
+  if (cached) return cached;
   const url = process.env.NEXT_PUBLIC_SUPABASE_URL;
   const key = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY;
   if (!url || !key) {
@@ -20,7 +23,8 @@ function client() {
       'NEXT_PUBLIC_SUPABASE_URL / NEXT_PUBLIC_SUPABASE_ANON_KEY missing (.env.local)'
     );
   }
-  return createClient(url, key);
+  cached = createClient(url, key);
+  return cached;
 }
 
 export async function listNotes(limit = 5): Promise<NoteRow[]> {
