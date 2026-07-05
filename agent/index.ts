@@ -7,7 +7,7 @@
  * running memory of its own contributions), then edits the shared document
  * with human-like cursor choreography.
  *
- *   pnpm agent [room]        # default room: main
+ *   pnpm agent [noteId]      # noteId = the /notes/<id> URL segment
  *
  * env (.env.local is auto-loaded): NEXT_PUBLIC_HOCUSPOCUS_URL /
  * AGENT_HOCUSPOCUS_URL, ANTHROPIC_API_KEY, AGENT_MODEL, AGENT_ROOM,

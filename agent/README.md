@@ -9,9 +9,13 @@ choreography. No frontend changes required.
 ## Run
 
 ```bash
-pnpm agent            # joins room "main"  → canvas:main
-pnpm agent my-room    # joins /canvas/my-room
+pnpm agent <noteId>   # joins the note open at /notes/<noteId>
 ```
+
+`<noteId>` is the id in the URL when you open a note (`/notes/<id>`). The agent
+joins the Hocuspocus document `note:{noteId}` — the **same** room that note's
+browser tabs use — so it collaborates directly on that note. One agent process
+serves one note; run several (or a supervisor) to cover multiple notes.
 
 Requires a Hocuspocus server reachable at the configured URL (the app's realtime
 server — see `hocuspocus/`).
@@ -23,12 +27,14 @@ server — see `hocuspocus/`).
 | `ANTHROPIC_API_KEY` | **required** — the agent thinks with Claude |
 | `AGENT_MODEL` | model override (default `claude-opus-4-8`) |
 | `NEXT_PUBLIC_HOCUSPOCUS_URL` / `AGENT_HOCUSPOCUS_URL` | WebSocket URL (default `ws://localhost:1234`) |
-| `AGENT_ROOM` / `AGENT_NAME` / `AGENT_COLOR` | presence identity + room override |
+| `AGENT_NOTE_ID` | note id to join (alias `AGENT_ROOM`); overridden by the CLI arg |
+| `AGENT_DOC_PREFIX` | document-name prefix (default `note:` — matches the browser) |
+| `AGENT_NAME` / `AGENT_COLOR` | presence identity (caret label + colour) |
 
 ## How it works
 
 - **Joins like a peer** — headless TipTap under jsdom bound to the shared
-  `canvas:{room}` Y.Doc. Its green "Cogno AI" caret is broadcast over the same
+  `note:{noteId}` Y.Doc. Its green "Cogno AI" caret is broadcast over the same
   y-protocols awareness the browser's `CollaborationCaret` renders.
   `agent/schema.ts` is kept **schema-identical** to the browser editor
   (`src/features/notes/lib/collaborativeExtensions.ts`) so the CRDT binding never

@@ -20,10 +20,20 @@ const jitter = (base: number, spread: number) =>
 
 export interface SessionOptions {
   url: string;
+  /**
+   * The room to join — the note id (the `notes` row id / the `/notes/<id>` URL
+   * segment). Combined with `docPrefix` to form the Y.Doc / Hocuspocus document
+   * name, which MUST match the browser (see `useCollaborativeEditor`).
+   */
   room: string;
   /** Presence identity — what humans see on the caret label. */
   name: string;
   color: string;
+  /**
+   * Hocuspocus document-name prefix. Defaults to `note:` to match the browser
+   * editor (`note:{noteId}`); override only if the app's naming changes.
+   */
+  docPrefix?: string;
 }
 
 export interface BlockSnapshot {
@@ -74,7 +84,9 @@ export class AgentSession {
 
     this.provider = new HocuspocusProvider({
       websocketProvider,
-      name: `canvas:${this.opts.room}`,
+      // Must match the browser's document name (`note:{noteId}`) so the agent
+      // shares the exact same Y.Doc as the humans editing that note.
+      name: `${this.opts.docPrefix ?? 'note:'}${this.opts.room}`,
       document: this.ydoc,
       forceSyncInterval: 3000,
       onSynced: () => resolveSynced(),

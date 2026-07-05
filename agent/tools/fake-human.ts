@@ -3,7 +3,7 @@
  * person would, then reports what the AI collaborator does — awareness
  * (presence/caret) events and document changes.
  *
- *   npx tsx agent/tools/fake-human.ts [room] ["message to type"]
+ *   npx tsx agent/tools/fake-human.ts [noteId] ["message to type"]
  */
 import { installDom } from '../dom';
 import { loadEnv } from '../env';
