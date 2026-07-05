@@ -1,7 +1,41 @@
+import { spawn } from 'node:child_process';
 import Anthropic from '@anthropic-ai/sdk';
+import { GoogleGenAI, Type } from '@google/genai';
 import type { BlockSnapshot } from './session';
 
-const MODEL = process.env.AGENT_MODEL || 'claude-opus-4-8';
+/**
+ * The agent's brain is pluggable:
+ *
+ *   AGENT_BRAIN=claude (default) — local Claude subscription via the
+ *     `claude -p` headless CLI. No API key, no metered billing: ideal for
+ *     local testing. Model: AGENT_CLAUDE_MODEL (default "sonnet").
+ *   AGENT_BRAIN=anthropic — Anthropic SDK via ANTHROPIC_API_KEY. Model:
+ *     AGENT_MODEL (default claude-opus-4-8).
+ *   AGENT_BRAIN=gemini — Google Gemini via GEMINI_API_KEY. Model:
+ *     GEMINI_MODEL (default gemini-2.5-flash).
+ *
+ * All providers share the same bounded conversation memory, so Cogno can build
+ * on its own previous edits instead of repeating itself.
+ */
+export type BrainProvider = 'anthropic-api' | 'claude-cli' | 'gemini';
+
+export function brainProvider(): BrainProvider {
+  const v = (process.env.AGENT_BRAIN || 'claude').toLowerCase();
+  if (v === 'gemini') return 'gemini';
+  if (v === 'anthropic' || v === 'anthropic-api') return 'anthropic-api';
+  return 'claude-cli';
+}
+
+export function brainModel(): string {
+  switch (brainProvider()) {
+    case 'anthropic-api':
+      return process.env.AGENT_MODEL || 'claude-opus-4-8';
+    case 'claude-cli':
+      return process.env.AGENT_CLAUDE_MODEL || 'sonnet';
+    case 'gemini':
+      return process.env.GEMINI_MODEL || 'gemini-2.5-flash';
+  }
+}
 
 export type AgentAction = 'append_after' | 'replace' | 'delete';
 
@@ -19,10 +53,9 @@ export interface BrainResult {
 }
 
 /**
- * Structured-output schema for the decision. Constrains Claude's response to
- * exactly {thought, ops} — no parsing guesswork. Structured outputs require
- * every property listed in `required` and `additionalProperties: false`, so
- * nullable fields are expressed with anyOf(..., null) rather than optionals.
+ * Structured-output schema for Anthropic. Structured outputs require every
+ * property listed in `required` and `additionalProperties: false`, so nullable
+ * fields are expressed with anyOf(..., null) rather than optionals.
  */
 const RESPONSE_SCHEMA = {
   type: 'object',
@@ -58,9 +91,36 @@ const RESPONSE_SCHEMA = {
   required: ['thought', 'ops'],
 } as const;
 
+/** Same decision shape as RESPONSE_SCHEMA, in Gemini's schema dialect. */
+const GEMINI_SCHEMA = {
+  type: Type.OBJECT,
+  properties: {
+    thought: {
+      type: Type.STRING,
+      description: 'One short sentence: why you act (or why you stay quiet).',
+    },
+    ops: {
+      type: Type.ARRAY,
+      items: {
+        type: Type.OBJECT,
+        properties: {
+          action: {
+            type: Type.STRING,
+            enum: ['append_after', 'replace', 'delete'],
+          },
+          blockId: { type: Type.STRING, nullable: true },
+          markdown: { type: Type.STRING, nullable: true },
+        },
+        required: ['action'],
+      },
+    },
+  },
+  required: ['thought', 'ops'],
+} as const;
+
 const SYSTEM = `You are "Cogno AI", a realtime collaborator on a shared canvas document — a teammate with a visible cursor, not a chatbot. Humans see your caret move, your text being typed, your selections before deletions.
 
-Context: this canvas is part of "Pillow", a realtime collaborative editor app (Next.js + TipTap + Y.js synced via a Hocuspocus WebSocket server; you are an AI client of that same server, thinking with Claude). When humans say "このアプリ" / "this app" they mean Pillow itself, not the Python imaging library.
+Context: this canvas is part of "Pillow", a realtime collaborative editor app (Next.js + TipTap + Y.js synced via a Hocuspocus WebSocket server; you are an AI client of that same server). When humans say "このアプリ" / "this app" they mean Pillow itself, not the Python imaging library.
 
 You receive the document as an ordered list of blocks, each with a stable blockId. This is a LIVE, ongoing collaboration: you remember your own earlier contributions from this conversation, so build on them and never repeat yourself. Decide one SMALL, genuinely helpful contribution reacting to the most recent human edits, and return edit operations.
 
@@ -110,34 +170,123 @@ function validateOps(raw: unknown): AgentOp[] {
         ['append_after', 'replace', 'delete'].includes(op.action) &&
         (op.action === 'delete' || typeof op.markdown === 'string')
     )
+    .map(op => ({ ...op, blockId: op.blockId ?? null }))
     .slice(0, 3);
 }
 
 /**
- * Cogno's thinking brain, powered by Claude.
- *
- * Unlike a stateless one-shot call, the brain keeps the full collaboration as
- * a running Claude conversation: every decision it makes becomes part of the
- * history it sees next time. This is the "stateful watch loop" idea from the
- * standalone impersonator, expressed the Claude-native way — the agent has a
- * genuine memory of what it already wrote, so it continues its own train of
- * thought and avoids re-doing or repeating past contributions. The immutable
- * system prompt is cached across turns.
+ * Loose JSON extraction for CLI mode. Tolerates a fenced reply, but never
+ * fence-scans a reply that already starts with "{" because op markdown may
+ * legitimately contain ```mermaid fences inside JSON strings.
+ */
+function extractJson(text: string): string {
+  let raw = text.trim();
+  if (!raw.startsWith('{')) {
+    const fence = raw.match(/```(?:json)?\s*([\s\S]*?)```/);
+    if (fence) raw = fence[1].trim();
+  }
+  if (!raw.startsWith('{')) {
+    const start = raw.indexOf('{');
+    const end = raw.lastIndexOf('}');
+    if (start >= 0 && end > start) raw = raw.slice(start, end + 1);
+  }
+  return raw;
+}
+
+const CLI_JSON_INSTRUCTION = `
+
+Output format — reply with ONLY a JSON object, no prose, no code fences:
+{"thought": "<one short sentence>", "ops": [{"action": "append_after" | "replace" | "delete", "blockId": "<id or null>", "markdown": "<markdown or null>"}]}`;
+
+/** One-shot generation through the local `claude` CLI in headless print mode. */
+function runClaudeCli(prompt: string, timeoutMs = 90_000): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const child = spawn(
+      'claude',
+      [
+        '-p',
+        '--model',
+        brainModel(),
+        '--output-format',
+        'json',
+        '--max-turns',
+        '1',
+        '--strict-mcp-config',
+      ],
+      { stdio: ['pipe', 'pipe', 'pipe'] }
+    );
+
+    let stdout = '';
+    let stderr = '';
+    const timer = setTimeout(() => {
+      child.kill('SIGKILL');
+      reject(new Error(`claude CLI timed out after ${timeoutMs}ms`));
+    }, timeoutMs);
+
+    child.stdout.on('data', d => (stdout += d));
+    child.stderr.on('data', d => (stderr += d));
+    child.on('error', err => {
+      clearTimeout(timer);
+      reject(err);
+    });
+    child.on('close', code => {
+      clearTimeout(timer);
+      if (code !== 0) {
+        reject(new Error(`claude CLI exited ${code}: ${stderr.slice(0, 300)}`));
+        return;
+      }
+      try {
+        // --output-format json wraps the reply in an envelope.
+        const envelope = JSON.parse(stdout) as {
+          is_error?: boolean;
+          result?: string;
+        };
+        if (envelope.is_error) {
+          reject(new Error(`claude CLI error: ${envelope.result}`));
+          return;
+        }
+        resolve(envelope.result ?? '');
+      } catch {
+        resolve(stdout);
+      }
+    });
+
+    child.stdin.write(prompt);
+    child.stdin.end();
+  });
+}
+
+interface Turn {
+  role: 'user' | 'assistant';
+  content: string;
+}
+
+/**
+ * Cogno's stateful brain. Keeps the collaboration as a running conversation:
+ * every decision it makes becomes part of the history it sees next time.
  */
 export class CognoBrain {
-  private readonly client: Anthropic;
-  private readonly history: Anthropic.MessageParam[] = [];
+  private readonly anthropic: Anthropic | null;
+  private readonly gemini: GoogleGenAI | null;
+  private readonly history: Turn[] = [];
   /** Keep the conversation bounded so token cost stays flat over a long session. */
   private static readonly MAX_HISTORY = 10;
 
   constructor() {
-    const apiKey = process.env.ANTHROPIC_API_KEY;
-    if (!apiKey) {
-      throw new Error('ANTHROPIC_API_KEY is not set (agent reads .env.local).');
-    }
+    const provider = brainProvider();
     // A jsdom `window` is installed for TipTap, which makes the SDK think it's
     // a browser; this is a trusted local process, so opt in explicitly.
-    this.client = new Anthropic({ apiKey, dangerouslyAllowBrowser: true });
+    this.anthropic =
+      provider === 'anthropic-api'
+        ? new Anthropic({
+            apiKey: process.env.ANTHROPIC_API_KEY!,
+            dangerouslyAllowBrowser: true,
+          })
+        : null;
+    this.gemini =
+      provider === 'gemini'
+        ? new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY! })
+        : null;
   }
 
   async think(input: {
@@ -156,38 +305,30 @@ Respond with your decision as JSON.`;
 
     this.history.push({ role: 'user', content: userTurn });
 
-    let message: Anthropic.Message;
+    let text: string;
     try {
-      message = await this.client.messages.create({
-        model: MODEL,
-        max_tokens: 2000,
-        thinking: { type: 'adaptive' },
-        // effort low keeps the reactive decision fast; structured outputs
-        // guarantee the {thought, ops} shape.
-        output_config: {
-          effort: 'low',
-          format: { type: 'json_schema', schema: RESPONSE_SCHEMA },
-        },
-        system: [
-          { type: 'text', text: SYSTEM, cache_control: { type: 'ephemeral' } },
-        ],
-        messages: this.history,
-        // Cast: `output_config.format` / adaptive thinking are current-API
-        // fields that may lag the installed SDK's static types.
-      } as unknown as Anthropic.MessageCreateParamsNonStreaming);
+      text = this.anthropic
+        ? await this.thinkApi()
+        : this.gemini
+          ? await this.thinkGemini()
+          : await this.thinkCli();
     } catch (err) {
       // Don't poison the history with a turn that got no answer.
       this.history.pop();
       throw err;
     }
 
-    const text = textOf(message);
     let parsed: { thought?: string; ops?: AgentOp[] };
     try {
-      parsed = JSON.parse(text);
+      parsed = JSON.parse(
+        this.anthropic || this.gemini ? text : extractJson(text)
+      );
     } catch {
       this.history.pop();
-      return { thought: 'unparseable model output — staying quiet', ops: [] };
+      return {
+        thought: `unparseable model output — staying quiet (got: ${text.slice(0, 120)}…)`,
+        ops: [],
+      };
     }
 
     // Record what we decided so the next turn remembers it.
@@ -195,6 +336,57 @@ Respond with your decision as JSON.`;
     this.trimHistory();
 
     return { thought: parsed.thought ?? '', ops: validateOps(parsed) };
+  }
+
+  private async thinkGemini(): Promise<string> {
+    const response = await this.gemini!.models.generateContent({
+      model: brainModel(),
+      contents: this.history.map(t => ({
+        role: t.role === 'assistant' ? 'model' : 'user',
+        parts: [{ text: t.content }],
+      })),
+      config: {
+        systemInstruction: SYSTEM,
+        responseMimeType: 'application/json',
+        responseSchema: GEMINI_SCHEMA,
+        temperature: 0.6,
+      },
+    });
+    return response.text ?? '{}';
+  }
+
+  private async thinkApi(): Promise<string> {
+    const message = await this.anthropic!.messages.create({
+      model: brainModel(),
+      max_tokens: 2000,
+      thinking: { type: 'adaptive' },
+      // effort low keeps the reactive decision fast; structured outputs
+      // guarantee the {thought, ops} shape.
+      output_config: {
+        effort: 'low',
+        format: { type: 'json_schema', schema: RESPONSE_SCHEMA },
+      },
+      system: [
+        { type: 'text', text: SYSTEM, cache_control: { type: 'ephemeral' } },
+      ],
+      messages: this.history.map(t => ({ role: t.role, content: t.content })),
+      // Cast: `output_config.format` / adaptive thinking are current-API
+      // fields that may lag the installed SDK's static types.
+    } as unknown as Anthropic.MessageCreateParamsNonStreaming);
+    return textOf(message);
+  }
+
+  private async thinkCli(): Promise<string> {
+    // The CLI is stateless per call; replay the bounded transcript so it has
+    // the same memory semantics as API mode.
+    const transcript = this.history
+      .map(t =>
+        t.role === 'user'
+          ? `[HUMAN TURN]\n${t.content}`
+          : `[YOUR PAST DECISION]\n${t.content}`
+      )
+      .join('\n\n');
+    return runClaudeCli(`${SYSTEM}\n\n---\n\n${transcript}${CLI_JSON_INSTRUCTION}`);
   }
 
   /** Keep the last MAX_HISTORY messages, always starting on a user turn. */
@@ -208,15 +400,41 @@ Respond with your decision as JSON.`;
   }
 }
 
-/** One-shot connectivity check — is Claude reachable with this key? */
-export async function pingClaude(): Promise<string> {
-  const apiKey = process.env.ANTHROPIC_API_KEY;
-  if (!apiKey) throw new Error('ANTHROPIC_API_KEY is not set.');
-  const client = new Anthropic({ apiKey, dangerouslyAllowBrowser: true });
-  const message = await client.messages.create({
-    model: MODEL,
-    max_tokens: 16,
-    messages: [{ role: 'user', content: 'Reply with exactly: pong' }],
-  });
-  return textOf(message);
+/** Compatibility wrapper for older callers that expected a one-shot function. */
+export async function askBrain(input: {
+  blocks: BlockSnapshot[];
+  changedIds: string[];
+  agentName: string;
+}): Promise<BrainResult> {
+  return new CognoBrain().think(input);
+}
+
+/** One-shot connectivity check — is the configured brain actually reachable? */
+export async function pingBrain(): Promise<string> {
+  switch (brainProvider()) {
+    case 'claude-cli':
+      return (await runClaudeCli('Reply with exactly: pong', 60_000)).trim();
+    case 'gemini': {
+      if (!process.env.GEMINI_API_KEY) throw new Error('GEMINI_API_KEY is not set.');
+      const ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY });
+      const response = await ai.models.generateContent({
+        model: brainModel(),
+        contents: 'Reply with exactly: pong',
+      });
+      return (response.text ?? '').trim();
+    }
+    case 'anthropic-api': {
+      if (!process.env.ANTHROPIC_API_KEY) throw new Error('ANTHROPIC_API_KEY is not set.');
+      const client = new Anthropic({
+        apiKey: process.env.ANTHROPIC_API_KEY,
+        dangerouslyAllowBrowser: true,
+      });
+      const message = await client.messages.create({
+        model: brainModel(),
+        max_tokens: 16,
+        messages: [{ role: 'user', content: 'Reply with exactly: pong' }],
+      });
+      return textOf(message);
+    }
+  }
 }
