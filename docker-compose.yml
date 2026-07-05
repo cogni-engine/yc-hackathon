@@ -49,5 +49,21 @@ services:
       - hocuspocus
       - gbrain
 
+  # Cogno AI — the resident collaborator. Joins every recent note over the
+  # in-network WebSocket and co-edits with a visible cursor.
+  agent:
+    build:
+      context: .
+      dockerfile: Dockerfile.agent
+    env_file:
+      - .env.local
+    environment:
+      AGENT_HOCUSPOCUS_URL: ws://hocuspocus:1234
+      # No claude CLI inside containers — use an API brain. GEMINI_API_KEY
+      # comes from .env.local; set ANTHROPIC_API_KEY there to use Claude.
+      AGENT_BRAIN: gemini
+    depends_on:
+      - hocuspocus
+
 volumes:
   gbrain-data:

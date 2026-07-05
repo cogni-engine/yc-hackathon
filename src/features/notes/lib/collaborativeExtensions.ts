@@ -133,15 +133,17 @@ export function createCollaborativeExtensions({
   slashCommandExtraItemsRef,
 }: CreateCollaborativeExtensionsProps) {
   return [
-    // StarterKit provides basic formatting. History is disabled (Y.js handles
-    // it); codeBlock is dropped so MermaidCodeBlock takes over ```mermaid.
+    // StarterKit provides basic formatting. Undo/redo is disabled (Y.js's
+    // Collaboration extension owns history — TipTap v3 renamed the option from
+    // `history` to `undoRedo`); codeBlock is dropped so MermaidCodeBlock takes
+    // over ```mermaid.
     StarterKit.configure({
-      history: false,
+      undoRedo: false,
       heading: {
         levels: [1, 2, 3, 4, 5, 6],
       },
       codeBlock: false,
-    } as Parameters<typeof StarterKit.configure>[0]),
+    }),
 
     Markdown,
 
@@ -202,6 +204,11 @@ export function createCollaborativeExtensions({
 
               const caret = document.createElement('span');
               caret.classList.add('collaboration-cursor__caret');
+              // AI collaborator caret: soft pulse while idle, solid while
+              // typing (the agent broadcasts `ai` / `typing` in awareness).
+              if (user.ai && !user.typing) {
+                caret.classList.add('collaboration-cursor__caret--idle');
+              }
               caret.style.backgroundColor = user.color;
 
               const label = document.createElement('span');
