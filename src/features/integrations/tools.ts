@@ -1,14 +1,15 @@
 import type { ElementType } from 'react';
 import {
-  Calendar,
-  FileText,
-  Folder,
-  Github,
-  Kanban,
-  MessageSquare,
-  Users,
-  Video,
-} from 'lucide-react';
+  GitHubLogo,
+  GoogleCalendarLogo,
+  GoogleDriveLogo,
+  GoogleMeetLogo,
+  JiraLogo,
+  LinearLogo,
+  MicrosoftTeamsLogo,
+  NotionLogo,
+  ZoomLogo,
+} from '@/components/BrandLogos';
 import { SlackLogo } from '@/components/SlackLogo';
 
 export type IntegrationTool = {
@@ -26,46 +27,46 @@ export const integrationTools: IntegrationTool[] = [
   {
     name: 'Jira',
     description: 'Issues and project tracking',
-    Icon: Kanban,
+    Icon: JiraLogo,
   },
   {
     name: 'Google Meet',
     description: 'Video meetings',
-    Icon: Video,
+    Icon: GoogleMeetLogo,
   },
   {
     name: 'Zoom',
     description: 'Video calls and webinars',
-    Icon: Video,
+    Icon: ZoomLogo,
   },
   {
     name: 'Google Calendar',
     description: 'Schedules and availability',
-    Icon: Calendar,
+    Icon: GoogleCalendarLogo,
   },
   {
     name: 'GitHub',
     description: 'Code and pull requests',
-    Icon: Github,
+    Icon: GitHubLogo,
   },
   {
     name: 'Notion',
     description: 'Docs and knowledge base',
-    Icon: FileText,
+    Icon: NotionLogo,
   },
   {
     name: 'Linear',
     description: 'Product planning',
-    Icon: MessageSquare,
+    Icon: LinearLogo,
   },
   {
     name: 'Microsoft Teams',
     description: 'Team chat and meetings',
-    Icon: Users,
+    Icon: MicrosoftTeamsLogo,
   },
   {
     name: 'Google Drive',
     description: 'Files and shared folders',
-    Icon: Folder,
+    Icon: GoogleDriveLogo,
   },
 ];
