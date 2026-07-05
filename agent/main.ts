@@ -2,8 +2,8 @@ import { AgentSession, sleep, jitter, type BlockSnapshot } from './session';
 import { CognoBrain, pingClaude, brainMode, brainModel, type AgentOp } from './brain';
 import { listNotes } from './notes';
 
-const QUIET_MS = 2000; // human stopped typing for this long → consider acting
-const COOLDOWN_MS = 4000; // min gap between two agent actions per note
+const QUIET_MS = 1200; // human stopped typing for this long → consider acting
+const COOLDOWN_MS = 2500; // min gap between two agent actions per note
 const MAX_SESSIONS = 6; // most-recent notes to join concurrently
 const NOTES_POLL_MS = 15000; // how often to look for new notes
 
@@ -70,16 +70,20 @@ async function insertHumanized(
 ): Promise<number> {
   let cursor = pos;
   for (const seg of splitSegments(markdown)) {
-    if (isPlainProse(seg)) {
+    if (/^\s*```mermaid/.test(seg)) {
+      // Diagrams grow line-by-line — watchers see nodes appear one at a time.
+      await session.moveCursorTo(cursor, 160);
+      cursor = await session.insertMermaidProgressive(cursor, seg);
+    } else if (isPlainProse(seg)) {
       session.insertNodeAt(cursor, { type: 'paragraph' });
-      await session.moveCursorTo(cursor + 1, 150);
+      await session.moveCursorTo(cursor + 1, 100);
       const end = await session.typeText(seg, cursor + 1);
       cursor = end + 1; // step over the paragraph's closing token
     } else {
-      await session.moveCursorTo(cursor, 250);
+      await session.moveCursorTo(cursor, 160);
       cursor = session.insertMarkdownAt(cursor, seg);
       session.broadcastCursor(cursor);
-      await sleep(jitter(300, 250));
+      await sleep(jitter(200, 180));
     }
   }
   return cursor;
@@ -109,24 +113,38 @@ async function executeOps(session: AgentSession, ops: AgentOp[]): Promise<void> 
           if (!op.blockId) break;
           const hit = session.findBlock(op.blockId);
           if (!hit) break;
-          await session.moveCursorTo(hit.pos, 250);
-          await session.selectAndDelete(hit.pos, hit.pos + hit.node.nodeSize);
-          await insertHumanized(session, hit.pos, op.markdown ?? '');
+          // Mermaid → mermaid: line-diff edit (part of the diagram is erased
+          // and redrawn) instead of wiping the whole block.
+          const md = (op.markdown ?? '').trim();
+          if (
+            hit.node.type.name === 'codeBlock' &&
+            hit.node.attrs?.language === 'mermaid' &&
+            /^```mermaid[\s\S]*```$/.test(md)
+          ) {
+            await session.moveCursorTo(hit.pos + hit.node.nodeSize - 1, 200);
+            if (await session.editMermaidBlock(op.blockId, md)) break;
+          }
+          // Human backspace-flow: caret to the end, chars vanish one by one,
+          // then the new content is written in place.
+          const insertAt = hit.pos;
+          await session.moveCursorTo(hit.pos + hit.node.nodeSize - 1, 200);
+          await session.deleteBlockBackwards(op.blockId);
+          await insertHumanized(session, Math.min(insertAt, session.docEnd()), op.markdown ?? '');
           break;
         }
         case 'delete': {
           if (!op.blockId) break;
           const hit = session.findBlock(op.blockId);
           if (!hit) break;
-          await session.moveCursorTo(hit.pos, 250);
-          await session.selectAndDelete(hit.pos, hit.pos + hit.node.nodeSize);
+          await session.moveCursorTo(hit.pos + hit.node.nodeSize - 1, 200);
+          await session.deleteBlockBackwards(op.blockId);
           break;
         }
       }
     } catch (err) {
       log(`op ${op.action} failed:`, err instanceof Error ? err.message : err);
     }
-    await sleep(jitter(350, 300));
+    await sleep(jitter(220, 200));
   }
 }
 

@@ -102,7 +102,12 @@ Behavior — you are an ACTIVE collaborator (this is a live demo; lean toward ac
 Hard rules:
 - Write in the same language as the document (Japanese doc → Japanese).
 - Keep each contribution digestible: at most 3 ops, ~150 words of new content total.
-- For diagrams ALWAYS use \`\`\`mermaid code fences. Mermaid syntax MUST be valid: start with "flowchart TD" (or LR), ASCII-only node IDs, and EVERY label in double quotes — e.g. A["ユーザー"] --> B["エディタ"]. No semicolons, no parentheses/braces/slashes outside quoted labels, no subgraph unless essential, max ~12 nodes. Never invent other embed types.
+- Diagrams are a first-class tool — use one PROACTIVELY whenever content describes a flow, structure, timeline, relationship, or comparison (not only when asked). ALWAYS a \`\`\`mermaid fence, and the syntax MUST be valid:
+  * flowchart LR (PREFER LR — compact; use TD only for genuinely hierarchical trees) — ASCII-only node IDs, EVERY label in double quotes: A["ユーザー"] --> B["エディタ"]. No semicolons, no parens/braces/slashes outside quoted labels, no subgraph unless essential. Keep labels SHORT (≤8 chars when possible) and diagrams SMALL: max ~8 nodes.
+  * sequenceDiagram — declare participants first (participant A as ユーザー), then A->>B: メッセージ. No quotes needed in messages; keep under ~8 exchanges.
+  * stateDiagram-v2 — [*] --> 状態名, 状態名 --> 次の状態: ラベル. Simple names, no special characters.
+  Tables (markdown |) are also welcome for comparisons. Never invent other embed types.
+- To MODIFY an existing diagram, use replace on that mermaid block with the complete new \`\`\`mermaid fence, keeping unchanged lines byte-identical — only changed lines animate (parts of the diagram visibly erased/redrawn). Prefer editing an existing diagram over adding a second one about the same thing.
 - delete/replace when asked (explicitly or clearly implied: duplicates, obsolete/done items, content the humans marked as wrong). Don't delete substance you merely disagree with.
 - Ops apply strictly top-to-bottom; two append_after on the same blockId keep their order (the second lands after the first's content). Prefer ONE append_after containing all of your new content (prose AND fences together, in reading order) over multiple ops.
 - NEVER open with filler acknowledgments ("承知しました", "わかりました", "Sure!", "説明します"). Start directly with the substance, like edits in a shared doc — not chat. No meta-commentary about being an AI.`;
@@ -180,7 +185,12 @@ function runClaudeCli(prompt: string, timeoutMs = 120_000): Promise<string> {
         '1',
         '--strict-mcp-config',
       ],
-      { stdio: ['pipe', 'pipe', 'pipe'] }
+      {
+        stdio: ['pipe', 'pipe', 'pipe'],
+        // Reactive decisions don't need extended thinking — disabling it cuts
+        // CLI latency roughly in half on Sonnet.
+        env: { ...process.env, MAX_THINKING_TOKENS: '0' },
+      }
     );
 
     let stdout = '';
@@ -261,6 +271,14 @@ Blocks changed by humans since your last look: ${
 
 Respond with your decision as JSON.`;
 
+    // Compact older user turns: the doc snapshot in them is stale (the current
+    // turn carries the fresh one) and re-sending it every time bloats latency.
+    // The assistant turns — what the brain decided — are the useful memory.
+    for (const turn of this.history) {
+      if (turn.role === 'user') {
+        turn.content = '(older document snapshot omitted — your decisions below still apply)';
+      }
+    }
     this.history.push({ role: 'user', content: userTurn });
 
     let text: string;

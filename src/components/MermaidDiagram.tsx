@@ -16,28 +16,85 @@ const mermaidValidationCache = new Map<
 >();
 export type MermaidColorMode = 'light' | 'dark';
 
-const MERMAID_THEME: Record<MermaidColorMode, MermaidConfig['theme']> = {
-  light: 'default',
-  dark: 'dark',
-};
-
+/**
+ * Hand-tuned `base` theme variables so diagrams sit naturally on the app's
+ * light/dark panels instead of Mermaid's washed-out defaults. Edge lines get
+ * an explicit `lineColor` so arrows stay clearly visible in dark mode.
+ */
 const MERMAID_THEME_VARIABLES: Record<
   MermaidColorMode,
   MermaidConfig['themeVariables']
 > = {
   light: {
     background: 'transparent',
+    fontSize: '13px',
+    // Nodes
+    primaryColor: '#ffffff',
+    mainBkg: '#ffffff',
+    primaryBorderColor: '#d5d7e5',
+    nodeBorder: '#d5d7e5',
+    secondaryColor: '#f4f5fa',
+    tertiaryColor: '#eceef6',
+    clusterBkg: '#f7f8fc',
+    clusterBorder: '#d5d7e5',
+    // Edges / arrows
+    lineColor: '#444444',
+    edgeLabelBackground: '#ffffff',
+    // Text
     textColor: '#18181b',
     titleColor: '#18181b',
     primaryTextColor: '#18181b',
     secondaryTextColor: '#18181b',
     tertiaryTextColor: '#18181b',
     nodeTextColor: '#18181b',
+    labelTextColor: '#18181b',
     pieTitleTextColor: '#18181b',
     pieLegendTextColor: '#18181b',
+    // Sequence diagrams
+    actorBkg: '#ffffff',
+    actorBorder: '#d5d7e5',
+    actorTextColor: '#18181b',
+    signalColor: '#444444',
+    signalTextColor: '#18181b',
+    noteBkgColor: '#f7f4e3',
+    noteTextColor: '#18181b',
+    noteBorderColor: '#ddd4a8',
   },
   dark: {
     background: 'transparent',
+    fontSize: '13px',
+    darkMode: true,
+    // Nodes: dark-panel-friendly fill with visible borders
+    primaryColor: '#232530',
+    mainBkg: '#232530',
+    primaryBorderColor: '#6b6e85',
+    nodeBorder: '#6b6e85',
+    secondaryColor: '#2b2d3c',
+    tertiaryColor: '#1d1f2a',
+    clusterBkg: '#1d1f2a',
+    clusterBorder: '#4a4d63',
+    // Edges / arrows: explicit light-grey so lines never vanish grey-on-grey
+    lineColor: '#8b8fa8',
+    edgeLabelBackground: '#232530',
+    // Text
+    textColor: '#e8e8f0',
+    titleColor: '#e8e8f0',
+    primaryTextColor: '#e8e8f0',
+    secondaryTextColor: '#e8e8f0',
+    tertiaryTextColor: '#e8e8f0',
+    nodeTextColor: '#e8e8f0',
+    labelTextColor: '#e8e8f0',
+    pieTitleTextColor: '#e8e8f0',
+    pieLegendTextColor: '#e8e8f0',
+    // Sequence diagrams
+    actorBkg: '#232530',
+    actorBorder: '#6b6e85',
+    actorTextColor: '#e8e8f0',
+    signalColor: '#8b8fa8',
+    signalTextColor: '#e8e8f0',
+    noteBkgColor: '#2f3142',
+    noteTextColor: '#e8e8f0',
+    noteBorderColor: '#6b6e85',
   },
 };
 
