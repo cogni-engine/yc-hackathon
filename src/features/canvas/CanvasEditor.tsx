@@ -12,10 +12,11 @@ import { TableControls } from '@/components/tiptap/TableControls';
 import { ImageControls } from '@/components/tiptap/ImageControls';
 import { EditorStyles } from '@/features/notes/lib/editorStyles';
 import { CollaborativeEditorStyles } from '@/features/notes/lib/collaborativeEditorStyles';
+import { getDisplayName } from '@/features/user/identity';
 
 interface CanvasEditorProps {
-  /** Room id — the Hocuspocus document is `canvas:{room}`. */
-  room: string;
+  /** Note id — the Hocuspocus document is `note:{noteId}`. */
+  noteId: string;
   /** Display name for the presence cursor. */
   userName?: string;
   placeholder?: string;
@@ -139,19 +140,17 @@ function SelectionSummarize({ editor }: { editor: Editor }) {
  * reply for everyone.
  */
 export function CanvasEditor({
-  room,
+  noteId,
   userName,
   placeholder = 'Type something…',
 }: CanvasEditorProps) {
-  // A stable random identity per browser session (no auth).
+  // Presence identity: a per-browser display name (localStorage), for the
+  // cursor label only. No auth — this doesn't gate anything.
   const userInfo = useMemo(() => {
-    const id =
-      typeof crypto !== 'undefined' && crypto.randomUUID
-        ? crypto.randomUUID()
-        : Math.random().toString(36).slice(2);
+    const { id, name } = getDisplayName();
     return {
       id,
-      name: userName || `Guest ${id.slice(0, 4)}`,
+      name: userName || name,
       color: generateUserColor(id),
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -160,7 +159,7 @@ export function CanvasEditor({
   const extensionOptions = useMemo(() => ({ placeholder }), [placeholder]);
 
   const { editor } = useCollaborativeEditor({
-    room,
+    noteId,
     user: userInfo,
     extensions: extensionOptions,
     proseSizeClassName: 'prose-base',

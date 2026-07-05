@@ -20,8 +20,8 @@ interface CollaborativeExtensionOptions {
 }
 
 interface UseCollaborativeEditorProps {
-  /** Hocuspocus document name suffix; the room id. */
-  room: string;
+  /** Hocuspocus document is `note:{noteId}`; also the notes table row id. */
+  noteId: string;
   user: UserInfo | null;
   extensions?: CollaborativeExtensionOptions;
   /**
@@ -73,7 +73,7 @@ function scheduleEditorMutation(callback: () => void): void {
  * clients. The document name is `canvas:{room}`.
  */
 export function useCollaborativeEditor({
-  room,
+  noteId,
   user,
   extensions: extensionOptions,
   proseSizeClassName = 'prose-sm sm:prose-base lg:prose-lg xl:prose-xl',
@@ -93,16 +93,16 @@ export function useCollaborativeEditor({
   // dev-only remount). The provider owns the network/observers and is torn down
   // explicitly.
   const ydoc = useMemo(() => {
-    if (!room) return null;
+    if (!noteId) return null;
     return new Y.Doc();
-  }, [room]);
+  }, [noteId]);
 
   // Create the Hocuspocus provider in an effect — NOT during render. The
   // constructor connects immediately and synchronously emits status events.
   const [provider, setProvider] = useState<HocuspocusProvider | null>(null);
 
   useEffect(() => {
-    if (!room || !ydoc) {
+    if (!noteId || !ydoc) {
       setProvider(null);
       return;
     }
@@ -112,7 +112,7 @@ export function useCollaborativeEditor({
 
     const newProvider = new HocuspocusProvider({
       url: hocuspocusUrl,
-      name: `canvas:${room}`,
+      name: `note:${noteId}`,
       document: ydoc,
       connect: true,
       forceSyncInterval: 3000,
@@ -144,7 +144,7 @@ export function useCollaborativeEditor({
       setIsSynced(false);
       setConnectionStatus('disconnected');
     };
-  }, [room, ydoc]);
+  }, [noteId, ydoc]);
 
   // Create TipTap extensions with collaboration. We only require the Y.Doc here
   // (available synchronously) so the editor mounts with a valid schema right
