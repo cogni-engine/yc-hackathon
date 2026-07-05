@@ -150,7 +150,7 @@ function MermaidCodeBlockPreview({
       )}
       {svg && (
         <div
-          className={`pointer-events-none min-h-14 max-w-full overflow-x-auto rounded-xl border border-border-default bg-surface-secondary p-3 [&_svg]:h-auto [&_svg]:w-full ${
+          className={`pointer-events-none max-h-[380px] min-h-14 max-w-full overflow-auto rounded-xl border border-border-default bg-surface-secondary p-3 [&_svg]:mx-auto [&_svg]:h-auto [&_svg]:max-h-[348px] [&_svg]:w-full ${
             naturalWidth === null ? 'w-full' : ''
           }`}
           style={
