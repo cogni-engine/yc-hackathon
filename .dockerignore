@@ -3,6 +3,7 @@ node_modules
 .next
 .git
 hocuspocus
+gbrain
 npm-debug.log*
 .env*
 .DS_Store

@@ -4,6 +4,7 @@ import {
   type AiEditResponse,
   type AiEditStep,
 } from '@/features/canvas/aiEditSteps';
+import { gbrainQuery } from '@/lib/gbrain';
 
 // Server-side only. Set GEMINI_API_KEY in the environment.
 export const runtime = 'nodejs';
@@ -177,9 +178,18 @@ export async function POST(req: Request) {
     );
   }
 
+  // Retrieve relevant company-brain context from gbrain (best-effort: if the
+  // bridge is down or empty we just proceed without it). This is the moment
+  // gbrain's contents reach the AI — every /api/ai call queries the brain first.
+  const brain = await gbrainQuery(selection ? `${prompt}\n\n${selection}` : prompt, 'query');
+  const brainBlock =
+    brain.ok && brain.text
+      ? `Relevant knowledge from the company brain (gbrain). Use it to ground your answer; cite page slugs when you rely on them:\n\n${brain.text}\n\n---\n\n`
+      : '';
+
   const contents = context
-    ? `Here is the current canvas content (Markdown):\n\n${context}\n\n---\n\nRequest: ${prompt}\n\nRespond in Markdown. Do not restate the existing content unless asked.`
-    : prompt;
+    ? `${brainBlock}Here is the current canvas content (Markdown):\n\n${context}\n\n---\n\nRequest: ${prompt}\n\nRespond in Markdown. Do not restate the existing content unless asked.`
+    : `${brainBlock}${prompt}`;
 
   try {
     const ai = new GoogleGenAI({ apiKey });
@@ -187,11 +197,11 @@ export async function POST(req: Request) {
     if (mode === 'edit') {
       // When the request is spoken, the instruction lives in the attached
       // audio; tell the model to read it from there instead of the text field.
-      const editPrompt = buildEditPrompt(
+      const editPrompt = `${brainBlock}${buildEditPrompt(
         prompt || 'The user request is in the attached audio. Interpret it.',
         context,
         selection
-      );
+      )}`;
       const contents =
         hasAudio && audio
           ? [

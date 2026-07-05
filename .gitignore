@@ -43,3 +43,6 @@ yarn-error.log*
 next-env.d.ts
 
 .mcp.json
+
+# Claude Code worktrees / local state
+.claude/

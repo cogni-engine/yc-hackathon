@@ -1,11 +1,22 @@
 {
-  "name": "cogno-impersonator",
+  "name": "pillow-agent",
   "version": "0.1.0",
   "private": true,
   "type": "module",
-  "description": "Local process that joins the Hocuspocus canvas as 'Cogno' and composes rich content like a human, driven by Claude. Runs on the repo-root dependency tree (see root `pnpm impersonate`).",
   "scripts": {
-    "start": "tsx impersonate.mjs",
-    "verify": "tsx verify-reader.mjs"
+    "start": "tsx src/index.ts",
+    "dev": "tsx watch src/index.ts"
+  },
+  "dependencies": {
+    "@google/genai": "^2.10.0",
+    "@hocuspocus/provider": "^2.13.6",
+    "ws": "^8.18.0",
+    "yjs": "^13.6.18"
+  },
+  "devDependencies": {
+    "tsx": "^4.19.2"
+  },
+  "engines": {
+    "node": ">=22"
   }
 }
