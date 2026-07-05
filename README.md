@@ -96,34 +96,57 @@ pnpm dev                   # http://localhost:3000
 ## AI collaborator agent
 
 ```bash
-pnpm agent            # joins room "main"
-pnpm agent my-room    # joins /canvas/my-room
+pnpm agent            # follows the sidebar: joins the 6 most recent notes,
+                      # picks up newly created notes automatically
+pnpm agent 12         # pin to a single note (note:12)
 ```
 
 Cogno AI connects to the Hocuspocus server as a normal WebSocket client
 (headless TipTap under jsdom, schema-identical to the browser editor) and
-behaves like a human teammate:
+lives on the note like a human teammate:
 
-- **Presence** — a named green caret via the same y-protocols awareness the
-  browser's CollaborationCaret renders. No frontend changes needed.
-- **Trigger** — waits until humans stop typing (~2.5s), reads the doc as
-  blockId-addressed markdown, asks Claude (structured JSON ops via
-  `output_config.format`), then edits.
-- **Memory** — the brain keeps a running Claude conversation for the whole
-  session, so it remembers its own past contributions and builds on them
-  instead of re-reacting from scratch (and won't repeat itself).
-- **Choreography** — caret moves & settles before writing; prose is typed
-  character-by-character; structured blocks (```mermaid, lists, tables) drop in
-  whole; deletions select-hold-then-delete so humans see what's happening.
-- Env (auto-read from `.env.local`): `ANTHROPIC_API_KEY` (required),
-  `NEXT_PUBLIC_HOCUSPOCUS_URL`/`AGENT_HOCUSPOCUS_URL`, `AGENT_MODEL`
-  (default `claude-opus-4-8`), `AGENT_ROOM`, `AGENT_NAME`, `AGENT_COLOR`.
+- **Resident presence** — its caret is ALWAYS on the note: parked where it
+  last worked, sliding away from human carets so it never overlaps them, with
+  a soft idle pulse (solid while typing).
+- **Two brains, one cursor** — a reflex brain fires ~0.6s after a human
+  STARTS typing (scaffolding, completions, quick fixes — never the block the
+  human is editing) and keeps re-firing during long bursts; a deep brain runs
+  after ~6s of quiet with full-document context and conversation memory. Both
+  drive the same single cursor, serialized.
+- **Layout ownership** — a shared "visual contract" (no empty-paragraph runs,
+  clean hierarchy, compact diagrams) is injected into both brains; the deep
+  brain tidies the note without being asked.
+- **Choreography** — prose typed character-by-character; deletion is a
+  human-style backspace (chars vanish one by one, accelerating); ```mermaid
+  diagrams are drawn line-by-line so nodes appear one at a time, edited by
+  line-diff (only changed lines vanish/appear), and deleted line-by-line.
 
-E2E smoke test without a browser — a scripted "fake human" types a question
-and reports the AI's presence + edits:
+### Brain providers
+
+| Provider | When | Models (deep / fast) |
+|---|---|---|
+| `anthropic-api` | `ANTHROPIC_API_KEY` set | `AGENT_MODEL` (claude-opus-4-8) / `AGENT_FAST_MODEL` (haiku 4.5) |
+| `claude-cli` | local dev, logged-in `claude` CLI, no keys needed | `sonnet` / `haiku` (subscription) |
+| `gemini` | `AGENT_BRAIN=gemini` or only `GEMINI_API_KEY` available | `GEMINI_MODEL` (gemini-2.5-flash) / same |
+
+Selection is automatic (`ANTHROPIC_API_KEY` → local CLI → `GEMINI_API_KEY`);
+force a family with `AGENT_BRAIN=claude|gemini`. **Production note:** servers
+have no logged-in CLI — set `ANTHROPIC_API_KEY` or `GEMINI_API_KEY`. The
+compose stack runs the agent as its own service (`AGENT_BRAIN=gemini`,
+in-network `AGENT_HOCUSPOCUS_URL=ws://hocuspocus:1234`); standalone deploys
+can use `Dockerfile.agent`.
+
+Other env (auto-read from `.env.local`): `AGENT_HOCUSPOCUS_URL` /
+`NEXT_PUBLIC_HOCUSPOCUS_URL`, `NEXT_PUBLIC_SUPABASE_URL` /
+`NEXT_PUBLIC_SUPABASE_ANON_KEY` (notes list), `AGENT_NOTE_ID`, `AGENT_NAME`,
+`AGENT_COLOR`.
+
+E2E harnesses (no browser needed):
 
 ```bash
-npx tsx agent/tools/fake-human.ts some-empty-room
+npx tsx agent/tools/fake-human.ts 5      # types a question into note:5, reports AI edits
+npx tsx agent/tools/presence-poc.ts 5    # types SLOWLY for ~15s, measures how fast the
+                                         # AI caret appears / reacts WHILE still typing
 ```
 
 > Don't run `docker compose` and `pnpm dev` at the same time — they bind the same

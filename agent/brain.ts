@@ -1,29 +1,55 @@
-import { spawn } from 'node:child_process';
+import { spawn, spawnSync } from 'node:child_process';
 import Anthropic from '@anthropic-ai/sdk';
 import { GoogleGenAI, Type } from '@google/genai';
 import type { BlockSnapshot } from './session';
 
 /**
- * The agent's brain is pluggable:
+ * Cogno's thinking brain runs on one of three providers:
  *
- *   AGENT_BRAIN=claude (default) — local Claude subscription via the
- *     `claude -p` headless CLI. No API key, no metered billing: ideal for
- *     local testing. Model: AGENT_CLAUDE_MODEL (default "sonnet").
- *   AGENT_BRAIN=anthropic — Anthropic SDK via ANTHROPIC_API_KEY. Model:
- *     AGENT_MODEL (default claude-opus-4-8).
- *   AGENT_BRAIN=gemini — Google Gemini via GEMINI_API_KEY. Model:
- *     GEMINI_MODEL (default gemini-2.5-flash).
+ *   anthropic-api — ANTHROPIC_API_KEY → Anthropic SDK, structured outputs,
+ *                   adaptive thinking, prompt caching. AGENT_MODEL
+ *                   (default claude-opus-4-8). Production-ready.
+ *   claude-cli    — the local `claude` CLI in headless print mode: the
+ *                   developer's Claude subscription, no API key. AGENT_MODEL
+ *                   (default "sonnet"). Local development only — servers
+ *                   don't have a logged-in CLI.
+ *   gemini        — GEMINI_API_KEY → Google Gemini with a response schema
+ *                   (same key the Next.js /api/ai route uses). GEMINI_MODEL
+ *                   (default gemini-2.5-flash). Production-ready.
  *
- * All providers share the same bounded conversation memory, so Cogno can build
- * on its own previous edits instead of repeating itself.
+ * Selection: AGENT_BRAIN=claude|gemini forces a family; otherwise
+ * ANTHROPIC_API_KEY > local claude CLI > GEMINI_API_KEY. All providers share
+ * the same conversation memory semantics.
  */
 export type BrainProvider = 'anthropic-api' | 'claude-cli' | 'gemini';
 
+let cachedProvider: BrainProvider | null = null;
+
+function hasClaudeCli(): boolean {
+  try {
+    return spawnSync('claude', ['--version'], { timeout: 8000 }).status === 0;
+  } catch {
+    return false;
+  }
+}
+
 export function brainProvider(): BrainProvider {
-  const v = (process.env.AGENT_BRAIN || 'claude').toLowerCase();
-  if (v === 'gemini') return 'gemini';
-  if (v === 'anthropic' || v === 'anthropic-api') return 'anthropic-api';
-  return 'claude-cli';
+  if (cachedProvider) return cachedProvider;
+  const pref = (process.env.AGENT_BRAIN || '').toLowerCase();
+  if (pref === 'gemini') {
+    cachedProvider = 'gemini';
+  } else if (pref === 'claude' || pref === 'anthropic') {
+    cachedProvider = process.env.ANTHROPIC_API_KEY ? 'anthropic-api' : 'claude-cli';
+  } else if (process.env.ANTHROPIC_API_KEY) {
+    cachedProvider = 'anthropic-api';
+  } else if (hasClaudeCli()) {
+    cachedProvider = 'claude-cli';
+  } else if (process.env.GEMINI_API_KEY) {
+    cachedProvider = 'gemini';
+  } else {
+    cachedProvider = 'claude-cli'; // ping will fail with a clear error
+  }
+  return cachedProvider;
 }
 
 export function brainModel(): string {
@@ -31,7 +57,7 @@ export function brainModel(): string {
     case 'anthropic-api':
       return process.env.AGENT_MODEL || 'claude-opus-4-8';
     case 'claude-cli':
-      return process.env.AGENT_CLAUDE_MODEL || 'sonnet';
+      return process.env.AGENT_MODEL || 'sonnet';
     case 'gemini':
       return process.env.GEMINI_MODEL || 'gemini-2.5-flash';
   }
@@ -104,14 +130,21 @@ const RESPONSE_SCHEMA = {
   required: ['thought', 'ops'],
 } as const;
 
+/**
+ * Shared appearance contract — injected into BOTH brains. The user cares
+ * about the note always LOOKING good more than anything else.
+ */
+const VISUAL_CONTRACT = `Document appearance contract (HIGHEST priority — the note must always LOOK clean):
+- No runs of empty paragraphs (at most one blank between sections). Stray fragments and leftover empty blocks should be deleted.
+- Clear hierarchy: headings for sections, lists for enumerations, short paragraphs (≤3 sentences). Prefer restructuring a wall of text into a list.
+- Diagrams stay compact (flowchart LR, ≤8 nodes, short labels); never two diagrams about the same thing — edit the existing one.
+- Everything you add must leave the document tidier than you found it.`;
+
 /** Same decision shape as RESPONSE_SCHEMA, in Gemini's schema dialect. */
 const GEMINI_SCHEMA = {
   type: Type.OBJECT,
   properties: {
-    thought: {
-      type: Type.STRING,
-      description: 'One short sentence: why you act (or why you stay quiet).',
-    },
+    thought: { type: Type.STRING },
     ops: {
       type: Type.ARRAY,
       items: {
@@ -130,16 +163,6 @@ const GEMINI_SCHEMA = {
   },
   required: ['thought', 'ops'],
 } as const;
-
-/**
- * Shared appearance contract — injected into BOTH brains. The user cares
- * about the note always LOOKING good more than anything else.
- */
-const VISUAL_CONTRACT = `Document appearance contract (HIGHEST priority — the note must always LOOK clean):
-- No runs of empty paragraphs (at most one blank between sections). Stray fragments and leftover empty blocks should be deleted.
-- Clear hierarchy: headings for sections, lists for enumerations, short paragraphs (≤3 sentences). Prefer restructuring a wall of text into a list.
-- Diagrams stay compact (flowchart LR, ≤8 nodes, short labels); never two diagrams about the same thing — edit the existing one.
-- Everything you add must leave the document tidier than you found it.`;
 
 const SYSTEM = `You are "Cogno AI", a realtime collaborator on a shared canvas document — a teammate with a visible cursor, not a chatbot. Humans see your caret move, your text being typed, your selections before deletions.
 
@@ -393,6 +416,7 @@ Respond with your decision as JSON.`;
 
     let parsed: { thought?: string; ops?: AgentOp[] };
     try {
+      // CLI replies may need loose extraction; both APIs return strict JSON.
       parsed = JSON.parse(
         this.anthropic || this.gemini ? text : extractJson(text)
       );
@@ -552,15 +576,15 @@ Respond with your decision as JSON.`;
   return { thought: parsed.thought ?? '', ops: validateOps(parsed).slice(0, 2) };
 }
 
-/** One-shot connectivity check — is the configured brain actually reachable? */
+/** One-shot connectivity check — is the configured brain reachable? */
 export async function pingBrain(): Promise<string> {
   switch (brainProvider()) {
     case 'claude-cli':
       return (await runClaudeCli('Reply with exactly: pong', 60_000)).trim();
     case 'gemini': {
       if (!process.env.GEMINI_API_KEY) throw new Error('GEMINI_API_KEY is not set.');
-      const ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY });
-      const response = await ai.models.generateContent({
+      const client = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY });
+      const response = await client.models.generateContent({
         model: brainModel(),
         contents: 'Reply with exactly: pong',
       });
