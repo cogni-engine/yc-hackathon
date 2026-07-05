@@ -57,9 +57,18 @@ The browser reaches ② via `NEXT_PUBLIC_HOCUSPOCUS_URL`.
 | `NEXT_PUBLIC_HOCUSPOCUS_URL` | app (build-time) | WebSocket URL of ②. Inlined into the client bundle at build — changing it needs a rebuild. Default `ws://localhost:1234`. |
 | `GEMINI_API_KEY` | app (server) | Used by `/api/ai`. **Never** prefix with `NEXT_PUBLIC`. Get one at https://aistudio.google.com/apikey |
 | `GEMINI_MODEL` | app (server) | Optional model override. Default `gemini-2.5-flash`. |
+| `GEMINI_IMAGE_MODEL` | app/agent (server) | Optional image model override. Default `gemini-3.1-flash-image`. |
+| `SUPABASE_URL` | app/agent (server) | Supabase project URL for generated image uploads. `NEXT_PUBLIC_SUPABASE_URL` also works, but server-only `SUPABASE_URL` is preferred. |
+| `SUPABASE_SERVICE_ROLE_KEY` | app/agent (server) | Server-only key used to upload generated images to Supabase Storage. Do not expose it to the browser. |
+| `SUPABASE_STORAGE_BUCKET` | app/agent (server) | Public Storage bucket for generated images. Default `generated-images`. |
+| `SUPABASE_STORAGE_PREFIX` | app/agent (server) | Object prefix inside the bucket. Default `ai-images`. |
 | `PORT` | hocuspocus | Listen port. Default `1234`. |
 
 Copy `.env.example` → `.env.local` and fill in `GEMINI_API_KEY`.
+
+For AI-generated images, create a public Supabase Storage bucket matching
+`SUPABASE_STORAGE_BUCKET`; inserted images use the bucket's public object URL,
+not signed URLs.
 
 ## Run with Docker (one command)
 

@@ -11,7 +11,8 @@
  *
  * env (.env.local is auto-loaded): NEXT_PUBLIC_HOCUSPOCUS_URL /
  * AGENT_HOCUSPOCUS_URL, ANTHROPIC_API_KEY, AGENT_MODEL, AGENT_ROOM,
- * AGENT_NAME, AGENT_COLOR.
+ * AGENT_NAME, AGENT_COLOR. Image generation also uses GEMINI_API_KEY plus
+ * Supabase Storage env vars.
  */
 import { installDom } from './dom';
 import { loadEnv } from './env';

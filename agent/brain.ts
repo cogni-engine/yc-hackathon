@@ -76,14 +76,26 @@ export function fastModel(): string {
   }
 }
 
-export type AgentAction = 'append_after' | 'replace' | 'delete';
+export type AgentAction =
+  | 'append_after'
+  | 'replace'
+  | 'delete'
+  | 'generate_image';
 
 export interface AgentOp {
   action: AgentAction;
-  /** Target block. null + append_after = end of document. */
+  /** Target block. null + append_after/generate_image = end of document. */
   blockId: string | null;
   /** New content (markdown) for append_after / replace. */
   markdown?: string;
+  /** Complete visual prompt for generate_image. */
+  prompt?: string;
+  /** Short alt text for generate_image. */
+  alt?: string;
+  /** Optional generated image aspect ratio, e.g. 16:9, 1:1, 4:3. */
+  aspectRatio?: string;
+  /** Optional generated image size, e.g. 1K or 2K. */
+  imageSize?: string;
 }
 
 export interface BrainResult {
@@ -112,18 +124,46 @@ const RESPONSE_SCHEMA = {
         properties: {
           action: {
             type: 'string',
-            enum: ['append_after', 'replace', 'delete'],
+            enum: ['append_after', 'replace', 'delete', 'generate_image'],
           },
           blockId: {
             anyOf: [{ type: 'string' }, { type: 'null' }],
-            description: 'Target block id. null = end of document.',
+            description:
+              'Target block id. null = end of document for append_after/generate_image.',
           },
           markdown: {
             anyOf: [{ type: 'string' }, { type: 'null' }],
             description: 'New markdown for append_after / replace; null for delete.',
           },
+          prompt: {
+            anyOf: [{ type: 'string' }, { type: 'null' }],
+            description:
+              'Complete visual prompt for generate_image; null for other actions.',
+          },
+          alt: {
+            anyOf: [{ type: 'string' }, { type: 'null' }],
+            description:
+              'Short alt text for generate_image; null for other actions.',
+          },
+          aspectRatio: {
+            anyOf: [{ type: 'string' }, { type: 'null' }],
+            description:
+              'Optional aspect ratio for generate_image: 1:1, 16:9, 9:16, 4:3, or 3:4.',
+          },
+          imageSize: {
+            anyOf: [{ type: 'string' }, { type: 'null' }],
+            description: 'Optional image size for generate_image: 1K or 2K.',
+          },
         },
-        required: ['action', 'blockId', 'markdown'],
+        required: [
+          'action',
+          'blockId',
+          'markdown',
+          'prompt',
+          'alt',
+          'aspectRatio',
+          'imageSize',
+        ],
       },
     },
   },
@@ -174,6 +214,7 @@ Operations:
 - append_after — insert new markdown after the block blockId (blockId null = end of document)
 - replace — replace block blockId entirely with new markdown
 - delete — remove block blockId
+- generate_image — generate one new image with the image tool and insert it after blockId (blockId null = end of document)
 
 Behavior — you are an ACTIVE collaborator (this is a live demo; lean toward acting):
 - If a human addresses you in the recent changes (your name, "Cogno", "AI(さん)", or any question / request / 依頼) you MUST respond with at least one op. Even if you answered something similar before, answer again — better, or adapted to what they just wrote. Never leave a direct address unanswered.
@@ -191,6 +232,12 @@ Hard rules:
   Tables (markdown |) are also welcome for comparisons. Never invent other embed types.
 - To MODIFY an existing diagram, use replace on that mermaid block with the complete new \`\`\`mermaid fence, keeping unchanged lines byte-identical — only changed lines animate (parts of the diagram visibly erased/redrawn). Prefer editing an existing diagram over adding a second one about the same thing.
 - delete/replace when asked (explicitly or clearly implied: duplicates, obsolete/done items, content the humans marked as wrong). Don't delete substance you merely disagree with.
+- Be small: at most 3 ops, at most ~120 words of new content total.
+- Good contributions: answer a question directed at you/AI, continue or complete what a human started (lists, outlines, sections), add a Mermaid diagram (\`\`\`mermaid fenced block) when a flow/structure/relationship is described in prose, generate an image when the human explicitly asks for an image/illustration/picture/visual, gently fix an obvious factual/typo error via replace.
+- Use generate_image only when image generation is explicitly useful or requested. The prompt must be a complete visual prompt with subject, style, composition, and relevant document context. Provide concise alt text. Never invent image URLs or write markdown image links for newly generated images.
+- For diagrams ALWAYS use \`\`\`mermaid code fences. Mermaid syntax MUST be valid: start with "flowchart TD" (or LR), ASCII-only node IDs, and EVERY label in double quotes — e.g. A["ユーザー"] --> B["エディタ"]. No semicolons, no parentheses/braces/slashes outside quoted labels, no subgraph unless essential, max ~12 nodes. Never invent other embed types.
+- delete/replace ONLY when clearly warranted: the human asked, exact duplicates, or content explicitly marked as done/obsolete. Never delete substance you merely disagree with.
+- If nothing genuinely helps — humans mid-thought, fragments, or you already responded to this state — return ops: []. Silence is professional. Never spam, never repeat yourself, never summarize the doc unprompted.
 - Ops apply strictly top-to-bottom; two append_after on the same blockId keep their order (the second lands after the first's content). Prefer ONE append_after containing all of your new content (prose AND fences together, in reading order) over multiple ops.
 - NEVER open with filler acknowledgments ("承知しました", "わかりました", "Sure!", "説明します"). Start directly with the substance, like edits in a shared doc — not chat. No meta-commentary about being an AI.
 
@@ -240,16 +287,51 @@ function textOf(message: Anthropic.Message): string {
 
 function validateOps(raw: unknown): AgentOp[] {
   const ops = Array.isArray((raw as { ops?: unknown })?.ops)
-    ? ((raw as { ops: unknown[] }).ops as AgentOp[])
+    ? (raw as { ops: unknown[] }).ops
     : [];
   return ops
-    .filter(
-      (op): op is AgentOp =>
-        !!op &&
-        ['append_after', 'replace', 'delete'].includes(op.action) &&
-        (op.action === 'delete' || typeof op.markdown === 'string')
-    )
-    .map(op => ({ ...op, blockId: op.blockId ?? null }))
+    .map((op): AgentOp | null => {
+      if (!op || typeof op !== 'object') return null;
+      const rawOp = op as Record<string, unknown>;
+      const action = rawOp.action;
+      if (
+        action !== 'append_after' &&
+        action !== 'replace' &&
+        action !== 'delete' &&
+        action !== 'generate_image'
+      ) {
+        return null;
+      }
+
+      const blockId = typeof rawOp.blockId === 'string' ? rawOp.blockId : null;
+      if (action === 'delete') {
+        return { action, blockId };
+      }
+
+      if (action === 'generate_image') {
+        if (typeof rawOp.prompt !== 'string' || !rawOp.prompt.trim()) {
+          return null;
+        }
+        return {
+          action,
+          blockId,
+          prompt: rawOp.prompt.trim(),
+          alt: typeof rawOp.alt === 'string' ? rawOp.alt.trim() : undefined,
+          aspectRatio:
+            typeof rawOp.aspectRatio === 'string'
+              ? rawOp.aspectRatio.trim()
+              : undefined,
+          imageSize:
+            typeof rawOp.imageSize === 'string'
+              ? rawOp.imageSize.trim()
+              : undefined,
+        };
+      }
+
+      if (typeof rawOp.markdown !== 'string') return null;
+      return { action, blockId, markdown: rawOp.markdown };
+    })
+    .filter((op): op is AgentOp => op !== null)
     .slice(0, 3);
 }
 
@@ -385,9 +467,8 @@ export class CognoBrain {
 
 ${renderBlocks(input.blocks)}
 
-Blocks changed by humans since your last look: ${
-      input.changedIds.length ? input.changedIds.join(', ') : '(unknown / first look)'
-    }
+Blocks changed by humans since your last look: ${input.changedIds.length ? input.changedIds.join(', ') : '(unknown / first look)'
+      }
 
 Respond with your decision as JSON.`;
 
