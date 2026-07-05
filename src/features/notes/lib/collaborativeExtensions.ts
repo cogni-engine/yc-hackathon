@@ -204,6 +204,11 @@ export function createCollaborativeExtensions({
 
               const caret = document.createElement('span');
               caret.classList.add('collaboration-cursor__caret');
+              // AI collaborator caret: soft pulse while idle, solid while
+              // typing (the agent broadcasts `ai` / `typing` in awareness).
+              if (user.ai && !user.typing) {
+                caret.classList.add('collaboration-cursor__caret--idle');
+              }
               caret.style.backgroundColor = user.color;
 
               const label = document.createElement('span');

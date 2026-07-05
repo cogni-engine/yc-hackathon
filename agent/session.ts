@@ -96,11 +96,24 @@ export class AgentSession {
     this.provider?.destroy();
   }
 
+  private typing = false;
+
   private setPresence(): void {
     this.provider.setAwarenessField('user', {
       name: this.opts.name,
       color: this.opts.color,
+      // Frontend caret renderer: AI caret blinks while idle, solid while
+      // typing — the "resident collaborator" tell.
+      ai: true,
+      typing: this.typing,
     });
+  }
+
+  /** Toggle the visible typing state (idle AI caret blinks). */
+  setTyping(on: boolean): void {
+    if (this.typing === on) return;
+    this.typing = on;
+    this.setPresence();
   }
 
   // ---------------------------------------------------------------- reading
@@ -205,18 +218,74 @@ export class AgentSession {
    * Broadcast the AI caret. Same awareness shape CollaborationCaret publishes
    * for humans, so the browsers render it with the standard caret + label.
    */
+  /** Where the caret last worked — the natural parking spot. */
+  private lastWorkRel: unknown | null = null;
+
   broadcastCursor(anchor: number, head: number = anchor): void {
     const relAnchor = this.absToRel(anchor);
     const relHead = this.absToRel(head);
     if (!relAnchor || !relHead) return;
+    this.lastWorkRel = relAnchor;
     this.provider.setAwarenessField('cursor', {
       anchor: relAnchor,
       head: relHead,
     });
   }
 
+  /** Absolute positions of other clients' carets (from awareness). */
+  private humanCursorPositions(): number[] {
+    const out: number[] = [];
+    const states = this.provider.awareness?.getStates();
+    if (!states) return out;
+    for (const [clientId, state] of states) {
+      if (clientId === this.ydoc.clientID) continue;
+      const cursor = (state as { cursor?: { anchor?: unknown } }).cursor;
+      if (!cursor?.anchor) continue;
+      try {
+        const rel = Y.createRelativePositionFromJSON(cursor.anchor);
+        const abs = this.relToAbs(rel);
+        if (abs != null) out.push(abs);
+      } catch {
+        // ignore malformed cursors
+      }
+    }
+    return out;
+  }
+
   clearCursor(): void {
     this.provider.setAwarenessField('cursor', null);
+  }
+
+  /**
+   * Rest the caret somewhere visible but OUT OF THE WAY: preferably where it
+   * last worked, never on top of a human's caret (their native caret + ours
+   * overlapping looks broken).
+   */
+  parkCursor(): void {
+    const humans = this.humanCursorPositions();
+    const desired = (() => {
+      if (this.lastWorkRel) {
+        const abs = this.relToAbs(this.lastWorkRel);
+        if (abs != null) return Math.min(abs, this.docEnd());
+      }
+      return this.docEnd();
+    })();
+
+    const tooClose = (pos: number) => humans.some(h => Math.abs(h - pos) < 4);
+    if (!tooClose(desired)) {
+      this.broadcastCursor(desired);
+      return;
+    }
+
+    // Slide to the nearest top-level block boundary that keeps distance.
+    const candidates: number[] = [];
+    this.editor.state.doc.forEach((node, offset) => {
+      candidates.push(offset + node.nodeSize - 1); // end of each block
+    });
+    const spot = candidates
+      .filter(p => !tooClose(p))
+      .sort((a, b) => Math.abs(a - desired) - Math.abs(b - desired))[0];
+    this.broadcastCursor(spot ?? Math.max(1, desired - 6));
   }
 
   // ------------------------------------------------------ humanized editing
@@ -313,6 +382,38 @@ export class AgentSession {
 
     if (!first.node.textContent) {
       await this.selectAndDelete(first.pos, first.pos + first.node.nodeSize, 450);
+      return;
+    }
+
+    // Mermaid diagrams die line-by-line (bottom-up), so watchers see nodes
+    // disappear one at a time instead of the source garbling char-wise.
+    if (
+      first.node.type.name === 'codeBlock' &&
+      first.node.attrs?.language === 'mermaid'
+    ) {
+      for (;;) {
+        const cur = this.findBlock(blockId);
+        if (!cur) return;
+        const linesNow = cur.node.textContent.split('\n');
+        if (linesNow.length <= 1) break;
+        let off = 0;
+        for (let i = 0; i < linesNow.length - 1; i++) off += linesNow[i].length + 1;
+        const from = cur.pos + 1 + off - 1; // include the preceding newline
+        const to = cur.pos + 1 + cur.node.content.size;
+        const tr = this.editor.state.tr.delete(from, to);
+        tr.setSelection(TextSelection.create(tr.doc, from));
+        this.editor.view.dispatch(tr);
+        this.broadcastCursor(from);
+        await sleep(jitter(340, 220));
+      }
+      const shell = this.findBlock(blockId);
+      if (shell) {
+        this.editor.commands.deleteRange({
+          from: shell.pos,
+          to: shell.pos + shell.node.nodeSize,
+        });
+        this.broadcastCursor(Math.min(shell.pos, this.docEnd()));
+      }
       return;
     }
 

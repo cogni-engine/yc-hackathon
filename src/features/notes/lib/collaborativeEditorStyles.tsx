@@ -21,6 +21,21 @@ export function CollaborativeEditorStyles() {
         border-radius: 1px;
       }
 
+      /* Idle AI caret: soft breathing pulse (distinct from the native
+         caret's hard blink); goes solid while the AI is typing */
+      .collaboration-cursor__caret--idle {
+        animation: cogno-caret-idle 1.6s ease-in-out infinite;
+      }
+      @keyframes cogno-caret-idle {
+        0%,
+        100% {
+          opacity: 1;
+        }
+        50% {
+          opacity: 0.25;
+        }
+      }
+
       /* User name label above the caret */
       .collaboration-cursor__label {
         position: absolute;

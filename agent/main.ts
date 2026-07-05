@@ -1,15 +1,25 @@
 import { AgentSession, sleep, jitter, type BlockSnapshot } from './session';
 import {
   CognoBrain,
+  quickThink,
   pingBrain,
   brainProvider,
   brainModel,
+  fastModel,
   type AgentOp,
 } from './brain';
 import { listNotes } from './notes';
 
-const QUIET_MS = 1200; // human stopped typing for this long → consider acting
-const COOLDOWN_MS = 2500; // min gap between two agent actions per note
+// Two brains, one cursor:
+// fast = reflexes — fires ~600ms after a human STARTS typing (leading edge),
+//        tiny scaffolding/completions, never touches their active block.
+// deep = the thinker — fires after the burst settles, full-document quality.
+const FAST_DELAY_MS = 600;
+// Short cooldown: during a long typing burst the reflex keeps re-firing, so
+// changes are applied continuously off the human's in-progress writing.
+const FAST_COOLDOWN_MS = 2500;
+const DEEP_QUIET_MS = 6000;
+const DEEP_COOLDOWN_MS = 18000;
 const MAX_SESSIONS = 6; // most-recent notes to join concurrently
 const NOTES_POLL_MS = 15000; // how often to look for new notes
 
@@ -172,59 +182,114 @@ async function watchNote(
     color: opts.color,
   });
   await session.connect();
+  // Visible from the first second: Cogno's caret is parked on the note even
+  // before it ever edits — the "always in the room" presence.
+  session.parkCursor();
   log(`${tag} joined (${session.markdown().length} chars)`);
 
   let ready = false;
-  let executing = false;
-  let missed = false;
+  let busy = false; // ONE cursor — fast and deep actions are serialized
+  let missedDeep = false;
   let destroyed = false;
-  let timer: ReturnType<typeof setTimeout> | null = null;
-  let lastActEnd = 0;
+  let fastArmed = true; // leading-edge: re-armed when a burst is handled
+  let fastTimer: ReturnType<typeof setTimeout> | null = null;
+  let deepTimer: ReturnType<typeof setTimeout> | null = null;
+  let lastFastEnd = 0;
+  let lastDeepEnd = 0;
   let lastHash = hashBlocks(session.blocks());
   let prevBlocks = new Map(
     session.blocks().map(b => [b.id ?? '', b.markdown] as const)
   );
 
-  const act = async () => {
-    if (executing || destroyed) return;
-    executing = true;
-    try {
-      const blocks = session.blocks();
-      const hash = hashBlocks(blocks);
-      if (hash === lastHash) return;
+  /** Diff against the last baseline; refresh baseline after every action. */
+  const snapshot = () => {
+    const blocks = session.blocks();
+    const hash = hashBlocks(blocks);
+    const changedIds = blocks
+      .filter(b => b.id && prevBlocks.get(b.id) !== b.markdown && b.markdown)
+      .map(b => b.id as string);
+    return { blocks, hash, changedIds };
+  };
 
-      const changedIds = blocks
-        .filter(b => b.id && prevBlocks.get(b.id) !== b.markdown && b.markdown)
-        .map(b => b.id as string);
+  const refreshBaseline = () => {
+    const after = session.blocks();
+    lastHash = hashBlocks(after);
+    prevBlocks = new Map(after.map(b => [b.id ?? '', b.markdown] as const));
+  };
+
+  // Reflex pass: the human just started typing. Tiny action, out of their way.
+  const fastAct = async () => {
+    if (busy || destroyed) {
+      fastArmed = true;
+      return;
+    }
+    busy = true;
+    try {
+      const { blocks, hash, changedIds } = snapshot();
+      if (hash === lastHash) return;
+      // The block they're editing right now = last changed one.
+      const activeBlockId = changedIds[changedIds.length - 1] ?? null;
+      const { thought, ops } = await quickThink({ blocks, changedIds, activeBlockId });
+      if (ops.length > 0) {
+        log(`${tag} reflex: ${thought} → ${ops.length} op(s)`);
+        session.setTyping(true);
+        await executeOps(session, ops);
+      }
+    } catch (err) {
+      log(`${tag} reflex failed:`, err instanceof Error ? err.message : err);
+    } finally {
+      // The caret stays on the note (parked at the end) — Cogno is always
+      // visibly in the room, not popping in and out.
+      session.setTyping(false);
+      session.parkCursor();
+      // Reflex edits become part of the next deep diff — do NOT refresh the
+      // baseline here, so the deep brain still sees what the human changed.
+      lastFastEnd = Date.now();
+      busy = false;
+      fastArmed = true;
+    }
+  };
+
+  // Deep pass: burst settled. Full-document thinking + layout ownership.
+  const deepAct = async () => {
+    if (destroyed) return;
+    if (busy) {
+      missedDeep = true;
+      return;
+    }
+    busy = true;
+    try {
+      const { blocks, hash, changedIds } = snapshot();
+      if (hash === lastHash) return;
 
       log(`${tag} thinking… (${blocks.length} blocks, changed: ${changedIds.join(', ') || '-'})`);
       const { thought, ops } = await brain.think({ blocks, changedIds });
       log(`${tag} decision: ${thought} → ${ops.length} op(s)`);
       if (ops.length > 0) {
+        session.setTyping(true);
         await executeOps(session, ops);
         log(`${tag} done editing.`);
       }
     } catch (err) {
       log(`${tag} act failed:`, err instanceof Error ? err.message : err);
     } finally {
-      session.clearCursor();
-      const after = session.blocks();
-      lastHash = hashBlocks(after);
-      prevBlocks = new Map(after.map(b => [b.id ?? '', b.markdown] as const));
-      lastActEnd = Date.now();
-      executing = false;
-      if (missed && !destroyed) {
-        missed = false;
-        schedule();
+      session.setTyping(false);
+      session.parkCursor();
+      refreshBaseline();
+      lastDeepEnd = Date.now();
+      busy = false;
+      if (missedDeep && !destroyed) {
+        missedDeep = false;
+        scheduleDeep();
       }
     }
   };
 
-  const schedule = () => {
+  const scheduleDeep = () => {
     if (destroyed) return;
-    if (timer) clearTimeout(timer);
-    const wait = Math.max(QUIET_MS, lastActEnd + COOLDOWN_MS - Date.now());
-    timer = setTimeout(() => void act(), wait);
+    if (deepTimer) clearTimeout(deepTimer);
+    const wait = Math.max(DEEP_QUIET_MS, lastDeepEnd + DEEP_COOLDOWN_MS - Date.now());
+    deepTimer = setTimeout(() => void deepAct(), wait);
   };
 
   session.ydoc.on('update', (_update: Uint8Array, origin: unknown) => {
@@ -232,18 +297,24 @@ async function watchNote(
     // Only remote (human) changes wake the agent; our own edits carry the
     // y-sync binding as origin, remote ones carry the provider.
     if (origin !== session.provider) return;
-    if (executing) {
-      missed = true;
-      return;
+
+    // Leading edge: first keystroke of a burst arms the reflex brain.
+    if (fastArmed && Date.now() - lastFastEnd > FAST_COOLDOWN_MS) {
+      fastArmed = false;
+      if (fastTimer) clearTimeout(fastTimer);
+      fastTimer = setTimeout(() => void fastAct(), FAST_DELAY_MS);
     }
-    schedule();
+
+    // Trailing edge: the deep brain waits for the burst to settle.
+    scheduleDeep();
   });
 
   ready = true;
   return {
     destroy() {
       destroyed = true;
-      if (timer) clearTimeout(timer);
+      if (fastTimer) clearTimeout(fastTimer);
+      if (deepTimer) clearTimeout(deepTimer);
       session.destroy();
     },
   };
@@ -260,7 +331,9 @@ export async function main(): Promise<void> {
 
   try {
     const pong = await pingBrain();
-    log(`brain OK (${brainProvider()} / model=${brainModel()}, reply="${pong}")`);
+    log(
+      `brain OK (${brainProvider()} / deep=${brainModel()} fast=${fastModel()}, reply="${pong}")`
+    );
   } catch (err) {
     log(
       `⚠ brain (${brainProvider()}) unreachable — the agent will join but cannot think:`,
