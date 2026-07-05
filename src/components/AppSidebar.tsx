@@ -2,8 +2,9 @@
 
 import Link from 'next/link';
 import { usePathname } from 'next/navigation';
-import { FileText, Plug, Slack } from 'lucide-react';
+import { FileText, Plug } from 'lucide-react';
 import { NotesList } from '@/features/notes/NotesList';
+import { integrationTools } from '@/features/integrations/tools';
 
 const tabs = [
   { href: '/notes', label: 'Notes', icon: FileText },
@@ -11,34 +12,45 @@ const tabs = [
 ];
 
 function isActiveTab(pathname: string, href: string) {
-  if (href === '/notes') return pathname === '/' || pathname.startsWith('/notes');
+  if (href === '/notes') {
+    return pathname === '/' || pathname.startsWith('/notes');
+  }
   return pathname === href || pathname.startsWith(`${href}/`);
 }
 
 function IntegrationsPanel() {
   return (
-    <div className='px-2 pb-3'>
-      <div className='rounded-md border border-border-default bg-surface-primary p-3'>
-        <div className='flex items-center gap-2'>
-          <div className='inline-flex size-8 shrink-0 items-center justify-center rounded-md bg-surface-secondary text-text-primary'>
-            <Slack className='size-4' />
-          </div>
-          <div className='min-w-0 flex-1'>
-            <div className='truncate text-sm font-medium text-text-primary'>
-              Slack
+    <div className='flex h-full flex-col gap-2 overflow-y-auto px-2 pb-3'>
+      {integrationTools.map(tool => {
+        const Icon = tool.Icon;
+
+        return (
+          <div
+            key={tool.name}
+            className='rounded-md border border-border-default bg-surface-primary p-3'
+          >
+            <div className='flex items-center gap-2'>
+              <div className='inline-flex size-8 shrink-0 items-center justify-center rounded-md bg-surface-secondary text-text-primary'>
+                <Icon className='size-4' />
+              </div>
+              <div className='min-w-0 flex-1'>
+                <div className='truncate text-sm font-medium text-text-primary'>
+                  {tool.name}
+                </div>
+                <div className='truncate text-xs text-text-muted'>
+                  {tool.description}
+                </div>
+              </div>
             </div>
-            <div className='truncate text-xs text-text-muted'>
-              Workspace messages
-            </div>
+            <button
+              type='button'
+              className='mt-3 inline-flex h-8 w-full items-center justify-center rounded-md bg-text-primary px-3 text-sm font-medium text-surface-primary transition-colors hover:opacity-90'
+            >
+              Connect
+            </button>
           </div>
-        </div>
-        <button
-          type='button'
-          className='mt-3 inline-flex h-8 w-full items-center justify-center rounded-md bg-text-primary px-3 text-sm font-medium text-surface-primary transition-colors hover:opacity-90'
-        >
-          Connect
-        </button>
-      </div>
+        );
+      })}
     </div>
   );
 }
