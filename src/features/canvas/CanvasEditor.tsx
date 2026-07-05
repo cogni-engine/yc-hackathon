@@ -158,12 +158,15 @@ export function CanvasEditor({
 
   const extensionOptions = useMemo(() => ({ placeholder }), [placeholder]);
 
-  const { editor } = useCollaborativeEditor({
+  const { editor, isSynced, connectionStatus } = useCollaborativeEditor({
     noteId,
     user: userInfo,
     extensions: extensionOptions,
     proseSizeClassName: 'prose-base',
   });
+  const isEditorReady = editor && isSynced;
+  const loadingLabel =
+    connectionStatus === 'disconnected' ? 'Reconnecting note…' : 'Loading note…';
 
   return (
     <div className='relative min-h-full w-full'>
@@ -171,14 +174,28 @@ export function CanvasEditor({
       <CollaborativeEditorStyles />
       {editor ? (
         <>
-          <EditorContent editor={editor} className='canvas-editor' />
-          <TableControls editor={editor} />
-          <ImageControls editor={editor} />
-          <SelectionSummarize editor={editor} />
-          <VoiceEditButton editor={editor} />
+          <EditorContent
+            editor={editor}
+            className={`canvas-editor transition-opacity ${
+              isEditorReady ? 'opacity-100' : 'pointer-events-none opacity-0'
+            }`}
+          />
+          {!isEditorReady && (
+            <div className='absolute left-0 top-0 text-sm text-text-muted'>
+              {loadingLabel}
+            </div>
+          )}
+          {isEditorReady && (
+            <>
+              <TableControls editor={editor} />
+              <ImageControls editor={editor} />
+              <SelectionSummarize editor={editor} />
+              <VoiceEditButton editor={editor} />
+            </>
+          )}
         </>
       ) : (
-        <div className='text-sm text-neutral-400'>{placeholder}</div>
+        <div className='text-sm text-text-muted'>Loading note…</div>
       )}
     </div>
   );
