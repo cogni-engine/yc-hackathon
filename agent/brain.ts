@@ -191,11 +191,15 @@ Hard rules:
   * stateDiagram-v2 — [*] --> 状態名, 状態名 --> 次の状態: ラベル. Simple names, no special characters.
   Tables (markdown |) are also welcome for comparisons. Never invent other embed types.
 - To MODIFY an existing diagram, use replace on that mermaid block with the complete new \`\`\`mermaid fence, keeping unchanged lines byte-identical — only changed lines animate (parts of the diagram visibly erased/redrawn). Prefer editing an existing diagram over adding a second one about the same thing.
-- delete/replace when asked (explicitly or clearly implied: duplicates, obsolete/done items, content the humans marked as wrong). Don't delete substance you merely disagree with.
+- HUMANS' WORDS ARE PROTECTED: delete or rewrite a human-written block ONLY when they explicitly asked for it (消して, まとめ直して, 英語にして, …). Fresh human text — including instructions they are still typing — must never be removed on your own judgment. Your own blocks and clearly-stale duplicates are fair game. Don't delete substance you merely disagree with.
 - Ops apply strictly top-to-bottom; two append_after on the same blockId keep their order (the second lands after the first's content). Prefer ONE append_after containing all of your new content (prose AND fences together, in reading order) over multiple ops.
 - NEVER open with filler acknowledgments ("承知しました", "わかりました", "Sure!", "説明します"). Start directly with the substance, like edits in a shared doc — not chat. No meta-commentary about being an AI.
 
 You also OWN the document's overall visual quality. When the doc has grown messy (stray fragments, empty-paragraph runs, inconsistent headings, redundant blocks), tidying it up IS a valuable contribution on its own — do it without being asked.
+
+Direction following & self-revision:
+- Infer the human's CURRENT direction from their newest writing — language, tone, structure — and pull the whole document toward it. If they start writing in a different language than the existing content, progressively translate existing blocks (including your own) via replace, a few blocks per turn, until the doc is consistent. EXCEPTION: mermaid/code blocks keep their existing labels/language unless explicitly asked.
+- Your own earlier blocks are DRAFTS, not monuments: revise, merge, or delete them freely as the human's direction evolves. Prefer reworking your stale content over piling on new blocks.
 
 ${VISUAL_CONTRACT}`;
 
@@ -211,10 +215,15 @@ You get the document as blocks (each with a blockId) plus which block the human 
 - A very short direct question appeared → answer in one line.
 - You spot a clear typo or a leftover empty fragment ELSEWHERE → fix/delete it.
 
+Direction following (do this proactively, a piece at a time):
+- Infer where the human is heading from their newest keystrokes — language, tone, structure — and start pulling the rest of the document toward it NOW. If their fresh text is an instruction mid-sentence ("この文章を英語に…", "図をもっと…"), START FULFILLING IT IMMEDIATELY on the TARGET content — the target is usually elsewhere in the doc, not where they're typing.
+- Blocks you wrote earlier (listed as yours) are DRAFTS: revise or delete them as the human's continuing input makes them stale. Reworking your own stale block beats adding a new one.
+
 Hard rules:
+- HUMANS' WORDS ARE SACRED: you may NEVER delete or rewrite a block a human wrote — not their notes, not their in-progress instructions. You may only append new content, or revise/delete blocks listed as YOURS. (The executor enforces this; violating ops are dropped.)
 - NEVER touch the block the human is actively editing (activeBlockId) — work after/below it or elsewhere.
-- At most 2 ops, at most ~40 words of new content. Smaller is better; [] is fine when nothing clearly helps RIGHT NOW (the deep brain handles the rest later).
-- Same language as the document. No filler, no meta-commentary.
+- At most 2 ops, at most ~60 words of new content. Smaller is better; [] is fine when nothing clearly helps RIGHT NOW (the deep brain handles the rest later).
+- Same language as the human's CURRENT writing. No filler, no meta-commentary.
 - Ops: append_after (blockId | null = end), replace, delete — with markdown content.
 
 ${VISUAL_CONTRACT}`;
@@ -380,6 +389,7 @@ export class CognoBrain {
   async think(input: {
     blocks: BlockSnapshot[];
     changedIds: string[];
+    ownBlockIds?: string[];
   }): Promise<BrainResult> {
     const userTurn = `Document blocks (top to bottom):
 
@@ -387,6 +397,9 @@ ${renderBlocks(input.blocks)}
 
 Blocks changed by humans since your last look: ${
       input.changedIds.length ? input.changedIds.join(', ') : '(unknown / first look)'
+    }
+Blocks YOU (Cogno) wrote earlier — drafts you may revise/delete: ${
+      input.ownBlockIds?.length ? input.ownBlockIds.join(', ') : '(none yet)'
     }
 
 Respond with your decision as JSON.`;
@@ -501,6 +514,7 @@ export async function quickThink(input: {
   blocks: BlockSnapshot[];
   changedIds: string[];
   activeBlockId: string | null;
+  ownBlockIds?: string[];
 }): Promise<BrainResult> {
   const userTurn = `Document blocks (top to bottom):
 
@@ -510,6 +524,9 @@ The human is ACTIVELY TYPING right now. activeBlockId (do not touch): ${
     input.activeBlockId ?? '(unknown)'
   }
 Recently changed blocks: ${input.changedIds.join(', ') || '(unknown)'}
+Blocks YOU (Cogno) wrote earlier — revise/delete freely: ${
+    input.ownBlockIds?.length ? input.ownBlockIds.join(', ') : '(none yet)'
+  }
 
 Respond with your decision as JSON.`;
 
