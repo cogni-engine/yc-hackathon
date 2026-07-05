@@ -9,6 +9,7 @@ import {
   type AgentOp,
 } from './brain';
 import { listNotes } from './notes';
+import { generateAndStoreImage } from '../src/lib/ai/generatedImages';
 
 // Two brains, one cursor:
 // fast = reflexes — fires ~600ms after a human STARTS typing (leading edge),
@@ -74,6 +75,20 @@ function isPlainProse(seg: string): boolean {
   return true;
 }
 
+function escapeMarkdownAltText(value: string): string {
+  return value
+    .replace(/\s+/g, ' ')
+    .trim()
+    .replace(/\\/g, '\\\\')
+    .replace(/\]/g, '\\]');
+}
+
+function positionAfterBlock(session: AgentSession, blockId: string | null): number {
+  if (!blockId) return session.docEnd();
+  const hit = session.findBlock(blockId);
+  return hit ? hit.pos + hit.node.nodeSize : session.docEnd();
+}
+
 /**
  * Insert markdown at `pos` like a human would: prose paragraphs are typed
  * character-by-character with the caret following; structured blocks
@@ -113,12 +128,9 @@ async function executeOps(session: AgentSession, ops: AgentOp[]): Promise<void> 
     try {
       switch (op.action) {
         case 'append_after': {
-          let pos = session.docEnd();
+          let pos = positionAfterBlock(session, op.blockId);
           if (lastAppend && lastAppend.blockId === op.blockId) {
             pos = Math.min(lastAppend.end, session.docEnd());
-          } else if (op.blockId) {
-            const hit = session.findBlock(op.blockId);
-            if (hit) pos = hit.pos + hit.node.nodeSize;
           }
           await session.moveCursorTo(pos);
           const end = await insertHumanized(session, pos, op.markdown ?? '');
@@ -154,6 +166,32 @@ async function executeOps(session: AgentSession, ops: AgentOp[]): Promise<void> 
           if (!hit) break;
           await session.moveCursorTo(hit.pos + hit.node.nodeSize - 1, 200);
           await session.deleteBlockBackwards(op.blockId);
+          break;
+        }
+        case 'generate_image': {
+          const prompt = op.prompt?.trim();
+          if (!prompt) break;
+
+          let pos = positionAfterBlock(session, op.blockId);
+          if (lastAppend && lastAppend.blockId === op.blockId) {
+            pos = Math.min(lastAppend.end, session.docEnd());
+          }
+
+          await session.moveCursorTo(pos, 200);
+          log('generating image...');
+          const image = await generateAndStoreImage({
+            apiKey: process.env.GEMINI_API_KEY,
+            prompt,
+            context: session.markdown(),
+            aspectRatio: op.aspectRatio,
+            imageSize: op.imageSize,
+          });
+          const alt = escapeMarkdownAltText(
+            op.alt || image.alt || prompt || 'Generated image'
+          );
+          const end = session.insertMarkdownAt(pos, `![${alt}](${image.src})`);
+          session.broadcastCursor(end);
+          lastAppend = { blockId: op.blockId, end };
           break;
         }
       }
