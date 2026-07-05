@@ -1,38 +1,79 @@
-import { spawn } from 'node:child_process';
+import { spawn, spawnSync } from 'node:child_process';
 import Anthropic from '@anthropic-ai/sdk';
+import { GoogleGenAI, Type } from '@google/genai';
 import type { BlockSnapshot } from './session';
 
 /**
- * Cogno's thinking brain, powered by Claude, in one of two modes:
+ * Cogno's thinking brain runs on one of three providers:
  *
- *   api — ANTHROPIC_API_KEY is set → Anthropic SDK with structured outputs,
- *         adaptive thinking, and prompt caching. Model: AGENT_MODEL
- *         (default claude-opus-4-8).
- *   cli — no API key → the local `claude` CLI in headless print mode, which
- *         uses the developer's Claude subscription. Model: AGENT_MODEL
- *         (default "sonnet" = latest Sonnet). Ideal for local testing.
+ *   anthropic-api — ANTHROPIC_API_KEY → Anthropic SDK, structured outputs,
+ *                   adaptive thinking, prompt caching. AGENT_MODEL
+ *                   (default claude-opus-4-8). Production-ready.
+ *   claude-cli    — the local `claude` CLI in headless print mode: the
+ *                   developer's Claude subscription, no API key. AGENT_MODEL
+ *                   (default "sonnet"). Local development only — servers
+ *                   don't have a logged-in CLI.
+ *   gemini        — GEMINI_API_KEY → Google Gemini with a response schema
+ *                   (same key the Next.js /api/ai route uses). GEMINI_MODEL
+ *                   (default gemini-2.5-flash). Production-ready.
  *
- * Both modes share the same conversation memory: every decision becomes part
- * of the history the brain sees next time, so it builds on its own past
- * contributions instead of re-reacting from scratch.
+ * Selection: AGENT_BRAIN=claude|gemini forces a family; otherwise
+ * ANTHROPIC_API_KEY > local claude CLI > GEMINI_API_KEY. All providers share
+ * the same conversation memory semantics.
  */
-export function brainMode(): 'api' | 'cli' {
-  return process.env.ANTHROPIC_API_KEY ? 'api' : 'cli';
+export type BrainProvider = 'anthropic-api' | 'claude-cli' | 'gemini';
+
+let cachedProvider: BrainProvider | null = null;
+
+function hasClaudeCli(): boolean {
+  try {
+    return spawnSync('claude', ['--version'], { timeout: 8000 }).status === 0;
+  } catch {
+    return false;
+  }
+}
+
+export function brainProvider(): BrainProvider {
+  if (cachedProvider) return cachedProvider;
+  const pref = (process.env.AGENT_BRAIN || '').toLowerCase();
+  if (pref === 'gemini') {
+    cachedProvider = 'gemini';
+  } else if (pref === 'claude' || pref === 'anthropic') {
+    cachedProvider = process.env.ANTHROPIC_API_KEY ? 'anthropic-api' : 'claude-cli';
+  } else if (process.env.ANTHROPIC_API_KEY) {
+    cachedProvider = 'anthropic-api';
+  } else if (hasClaudeCli()) {
+    cachedProvider = 'claude-cli';
+  } else if (process.env.GEMINI_API_KEY) {
+    cachedProvider = 'gemini';
+  } else {
+    cachedProvider = 'claude-cli'; // ping will fail with a clear error
+  }
+  return cachedProvider;
 }
 
 export function brainModel(): string {
-  return (
-    process.env.AGENT_MODEL ||
-    (brainMode() === 'api' ? 'claude-opus-4-8' : 'sonnet')
-  );
+  switch (brainProvider()) {
+    case 'anthropic-api':
+      return process.env.AGENT_MODEL || 'claude-opus-4-8';
+    case 'claude-cli':
+      return process.env.AGENT_MODEL || 'sonnet';
+    case 'gemini':
+      return process.env.GEMINI_MODEL || 'gemini-2.5-flash';
+  }
 }
 
 /** The reflex brain trades depth for latency — smallest capable model. */
 export function fastModel(): string {
-  return (
-    process.env.AGENT_FAST_MODEL ||
-    (brainMode() === 'api' ? 'claude-haiku-4-5-20251001' : 'haiku')
-  );
+  if (process.env.AGENT_FAST_MODEL) return process.env.AGENT_FAST_MODEL;
+  switch (brainProvider()) {
+    case 'anthropic-api':
+      return 'claude-haiku-4-5-20251001';
+    case 'claude-cli':
+      return 'haiku';
+    case 'gemini':
+      return 'gemini-2.5-flash';
+  }
 }
 
 export type AgentAction = 'append_after' | 'replace' | 'delete';
@@ -99,6 +140,30 @@ const VISUAL_CONTRACT = `Document appearance contract (HIGHEST priority — the 
 - Clear hierarchy: headings for sections, lists for enumerations, short paragraphs (≤3 sentences). Prefer restructuring a wall of text into a list.
 - Diagrams stay compact (flowchart LR, ≤8 nodes, short labels); never two diagrams about the same thing — edit the existing one.
 - Everything you add must leave the document tidier than you found it.`;
+
+/** Same decision shape as RESPONSE_SCHEMA, in Gemini's schema dialect. */
+const GEMINI_SCHEMA = {
+  type: Type.OBJECT,
+  properties: {
+    thought: { type: Type.STRING },
+    ops: {
+      type: Type.ARRAY,
+      items: {
+        type: Type.OBJECT,
+        properties: {
+          action: {
+            type: Type.STRING,
+            enum: ['append_after', 'replace', 'delete'],
+          },
+          blockId: { type: Type.STRING, nullable: true },
+          markdown: { type: Type.STRING, nullable: true },
+        },
+        required: ['action'],
+      },
+    },
+  },
+  required: ['thought', 'ops'],
+} as const;
 
 const SYSTEM = `You are "Cogno AI", a realtime collaborator on a shared canvas document — a teammate with a visible cursor, not a chatbot. Humans see your caret move, your text being typed, your selections before deletions.
 
@@ -289,18 +354,27 @@ interface Turn {
  * the agent has genuine memory of what it already wrote.
  */
 export class CognoBrain {
-  private readonly client: Anthropic | null;
+  private readonly anthropic: Anthropic | null;
+  private readonly gemini: GoogleGenAI | null;
   private readonly history: Turn[] = [];
   /** Keep the conversation bounded so token cost stays flat over a long session. */
   private static readonly MAX_HISTORY = 10;
 
   constructor() {
-    const apiKey = process.env.ANTHROPIC_API_KEY;
+    const provider = brainProvider();
     // A jsdom `window` is installed for TipTap, which makes the SDK think it's
     // a browser; this is a trusted local process, so opt in explicitly.
-    this.client = apiKey
-      ? new Anthropic({ apiKey, dangerouslyAllowBrowser: true })
-      : null; // cli mode — subscription via `claude -p`
+    this.anthropic =
+      provider === 'anthropic-api'
+        ? new Anthropic({
+            apiKey: process.env.ANTHROPIC_API_KEY!,
+            dangerouslyAllowBrowser: true,
+          })
+        : null;
+    this.gemini =
+      provider === 'gemini'
+        ? new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY! })
+        : null;
   }
 
   async think(input: {
@@ -329,7 +403,11 @@ Respond with your decision as JSON.`;
 
     let text: string;
     try {
-      text = this.client ? await this.thinkApi() : await this.thinkCli();
+      text = this.anthropic
+        ? await this.thinkApi()
+        : this.gemini
+          ? await this.thinkGemini()
+          : await this.thinkCli();
     } catch (err) {
       // Don't poison the history with a turn that got no answer.
       this.history.pop();
@@ -338,7 +416,10 @@ Respond with your decision as JSON.`;
 
     let parsed: { thought?: string; ops?: AgentOp[] };
     try {
-      parsed = JSON.parse(this.client ? text : extractJson(text));
+      // CLI replies may need loose extraction; both APIs return strict JSON.
+      parsed = JSON.parse(
+        this.anthropic || this.gemini ? text : extractJson(text)
+      );
     } catch {
       this.history.pop();
       return {
@@ -354,8 +435,25 @@ Respond with your decision as JSON.`;
     return { thought: parsed.thought ?? '', ops: validateOps(parsed) };
   }
 
+  private async thinkGemini(): Promise<string> {
+    const response = await this.gemini!.models.generateContent({
+      model: brainModel(),
+      contents: this.history.map(t => ({
+        role: t.role === 'assistant' ? 'model' : 'user',
+        parts: [{ text: t.content }],
+      })),
+      config: {
+        systemInstruction: SYSTEM,
+        responseMimeType: 'application/json',
+        responseSchema: GEMINI_SCHEMA,
+        temperature: 0.6,
+      },
+    });
+    return response.text ?? '{}';
+  }
+
   private async thinkApi(): Promise<string> {
-    const message = await this.client!.messages.create({
+    const message = await this.anthropic!.messages.create({
       model: brainModel(),
       max_tokens: 2000,
       thinking: { type: 'adaptive' },
@@ -415,10 +513,11 @@ Recently changed blocks: ${input.changedIds.join(', ') || '(unknown)'}
 
 Respond with your decision as JSON.`;
 
+  const provider = brainProvider();
   let text: string;
-  if (process.env.ANTHROPIC_API_KEY) {
+  if (provider === 'anthropic-api') {
     const client = new Anthropic({
-      apiKey: process.env.ANTHROPIC_API_KEY,
+      apiKey: process.env.ANTHROPIC_API_KEY!,
       dangerouslyAllowBrowser: true,
     });
     const message = await client.messages.create({
@@ -434,6 +533,19 @@ Respond with your decision as JSON.`;
       messages: [{ role: 'user', content: userTurn }],
     } as unknown as Anthropic.MessageCreateParamsNonStreaming);
     text = textOf(message);
+  } else if (provider === 'gemini') {
+    const client = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY! });
+    const response = await client.models.generateContent({
+      model: fastModel(),
+      contents: userTurn,
+      config: {
+        systemInstruction: SYSTEM_FAST,
+        responseMimeType: 'application/json',
+        responseSchema: GEMINI_SCHEMA,
+        temperature: 0.4,
+      },
+    });
+    text = response.text ?? '{}';
   } else {
     text = await runClaudeCli(
       `${SYSTEM_FAST}\n\n---\n\n${userTurn}${CLI_JSON_INSTRUCTION}`,
@@ -444,26 +556,39 @@ Respond with your decision as JSON.`;
 
   let parsed: { thought?: string; ops?: AgentOp[] };
   try {
-    parsed = JSON.parse(process.env.ANTHROPIC_API_KEY ? text : extractJson(text));
+    parsed = JSON.parse(provider === 'claude-cli' ? extractJson(text) : text);
   } catch {
     return { thought: 'reflex: unparseable — skipping', ops: [] };
   }
   return { thought: parsed.thought ?? '', ops: validateOps(parsed).slice(0, 2) };
 }
 
-/** One-shot connectivity check — is Claude reachable in the active mode? */
-export async function pingClaude(): Promise<string> {
-  if (brainMode() === 'cli') {
-    return (await runClaudeCli('Reply with exactly: pong', 60_000)).trim();
+/** One-shot connectivity check — is the configured brain reachable? */
+export async function pingBrain(): Promise<string> {
+  switch (brainProvider()) {
+    case 'claude-cli':
+      return (await runClaudeCli('Reply with exactly: pong', 60_000)).trim();
+    case 'gemini': {
+      if (!process.env.GEMINI_API_KEY) throw new Error('GEMINI_API_KEY is not set.');
+      const client = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY });
+      const response = await client.models.generateContent({
+        model: brainModel(),
+        contents: 'Reply with exactly: pong',
+      });
+      return (response.text ?? '').trim();
+    }
+    case 'anthropic-api': {
+      if (!process.env.ANTHROPIC_API_KEY) throw new Error('ANTHROPIC_API_KEY is not set.');
+      const client = new Anthropic({
+        apiKey: process.env.ANTHROPIC_API_KEY,
+        dangerouslyAllowBrowser: true,
+      });
+      const message = await client.messages.create({
+        model: brainModel(),
+        max_tokens: 16,
+        messages: [{ role: 'user', content: 'Reply with exactly: pong' }],
+      });
+      return textOf(message);
+    }
   }
-  const client = new Anthropic({
-    apiKey: process.env.ANTHROPIC_API_KEY!,
-    dangerouslyAllowBrowser: true,
-  });
-  const message = await client.messages.create({
-    model: brainModel(),
-    max_tokens: 16,
-    messages: [{ role: 'user', content: 'Reply with exactly: pong' }],
-  });
-  return textOf(message);
 }

@@ -2,8 +2,8 @@ import { AgentSession, sleep, jitter, type BlockSnapshot } from './session';
 import {
   CognoBrain,
   quickThink,
-  pingClaude,
-  brainMode,
+  pingBrain,
+  brainProvider,
   brainModel,
   fastModel,
   type AgentOp,
@@ -334,13 +334,13 @@ export async function main(): Promise<void> {
   const pinned = process.env.AGENT_NOTE_ID || process.argv[2];
 
   try {
-    const pong = await pingClaude();
+    const pong = await pingBrain();
     log(
-      `Claude OK (${brainMode()} / deep=${brainModel()} fast=${fastModel()}, reply="${pong}")`
+      `brain OK (${brainProvider()} / deep=${brainModel()} fast=${fastModel()}, reply="${pong}")`
     );
   } catch (err) {
     log(
-      `⚠ Claude (${brainMode()}) unreachable — the agent will join but cannot think:`,
+      `⚠ brain (${brainProvider()}) unreachable — the agent will join but cannot think:`,
       err instanceof Error ? err.message : err
     );
   }
