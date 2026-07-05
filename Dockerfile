@@ -1,5 +1,5 @@
 # Next.js app (standalone output). The realtime server lives in ./hocuspocus.
-FROM node:20-slim AS base
+FROM node:22-slim AS base
 RUN corepack enable
 
 FROM base AS deps

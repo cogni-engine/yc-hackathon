@@ -1,0 +1,22 @@
+{
+  "name": "pillow-agent",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "start": "tsx src/index.ts",
+    "dev": "tsx watch src/index.ts"
+  },
+  "dependencies": {
+    "@google/genai": "^2.10.0",
+    "@hocuspocus/provider": "^2.13.6",
+    "ws": "^8.18.0",
+    "yjs": "^13.6.18"
+  },
+  "devDependencies": {
+    "tsx": "^4.19.2"
+  },
+  "engines": {
+    "node": ">=22"
+  }
+}
