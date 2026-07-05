@@ -24,6 +24,10 @@ interface CanvasEditorProps {
   placeholder?: string;
 }
 
+const AUTO_AI_IDLE_MS = 3000;
+const AUTO_AI_PROMPT =
+  'The user paused after editing the shared canvas. Join as an AI collaborator and make one small useful edit. Prefer tightening wording, completing an unfinished thought, or adding one concise next step.';
+
 /** Send arbitrary text to the AI endpoint and return the reply. */
 async function askAI(payload: {
   prompt: string;
@@ -236,6 +240,65 @@ function AiEditBar({ editor }: { editor: Editor }) {
   );
 }
 
+function AutoAiDebouncedEdit({ editor }: { editor: Editor }) {
+  const runningRef = useRef(false);
+
+  useEffect(() => {
+    let idleTimer: number | null = null;
+
+    function clearIdleTimer() {
+      if (idleTimer === null) return;
+      window.clearTimeout(idleTimer);
+      idleTimer = null;
+    }
+
+    async function runIdleEdit() {
+      idleTimer = null;
+      if (runningRef.current || editor.isDestroyed) return;
+
+      const context = getEditorText(editor);
+      if (!context) return;
+
+      runningRef.current = true;
+      try {
+        const steps = await askAIEdit({
+          prompt: AUTO_AI_PROMPT,
+          context,
+          selection: getSelectionText(editor),
+        });
+        await runAiEditSteps(editor, steps);
+      } catch (e) {
+        editor.commands.hideAiCursor();
+        console.warn('Auto AI edit failed', e);
+      } finally {
+        runningRef.current = false;
+      }
+    }
+
+    function scheduleIdleEdit({
+      transaction,
+    }: {
+      transaction: { docChanged: boolean };
+    }) {
+      if (!transaction.docChanged || runningRef.current) return;
+      clearIdleTimer();
+      idleTimer = window.setTimeout(() => {
+        void runIdleEdit();
+      }, AUTO_AI_IDLE_MS);
+    }
+
+    editor.on('transaction', scheduleIdleEdit);
+
+    return () => {
+      clearIdleTimer();
+      editor.off('transaction', scheduleIdleEdit);
+      runningRef.current = false;
+    };
+  }, [editor]);
+
+  return null;
+}
+
 /**
  * Realtime collaborative canvas — the same TipTap + Y.js + Hocuspocus stack as
  * cogno's task description editor, stripped of auth / tasks / attachments.
@@ -307,6 +370,7 @@ export function CanvasEditor({
           <ImageControls editor={editor} />
           <SelectionSummarize editor={editor} />
           <AiEditBar editor={editor} />
+          <AutoAiDebouncedEdit editor={editor} />
         </>
       ) : (
         <div className='text-sm text-neutral-400'>{placeholder}</div>
