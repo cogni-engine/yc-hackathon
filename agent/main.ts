@@ -75,12 +75,8 @@ function isPlainProse(seg: string): boolean {
   return true;
 }
 
-function escapeMarkdownAltText(value: string): string {
-  return value
-    .replace(/\s+/g, ' ')
-    .trim()
-    .replace(/\\/g, '\\\\')
-    .replace(/\]/g, '\\]');
+function normalizeAltText(value: string): string {
+  return value.replace(/\s+/g, ' ').trim();
 }
 
 function positionAfterBlock(session: AgentSession, blockId: string | null): number {
@@ -186,10 +182,10 @@ async function executeOps(session: AgentSession, ops: AgentOp[]): Promise<void> 
             aspectRatio: op.aspectRatio,
             imageSize: op.imageSize,
           });
-          const alt = escapeMarkdownAltText(
+          const alt = normalizeAltText(
             op.alt || image.alt || prompt || 'Generated image'
           );
-          const end = session.insertMarkdownAt(pos, `![${alt}](${image.src})`);
+          const end = session.insertImageAt(pos, { src: image.src, alt });
           session.broadcastCursor(end);
           lastAppend = { blockId: op.blockId, end };
           break;
