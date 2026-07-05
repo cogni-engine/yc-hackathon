@@ -44,7 +44,11 @@
     "react-dom": "19.2.4",
     "tailwind-merge": "^2.5.1",
     "tippy.js": "^6.3.7",
+<<<<<<< HEAD
     "ws": "^8.21.0",
+=======
+    "ws": "^8.18.0",
+>>>>>>> origin/main
     "yjs": "^13.6.18"
   },
   "devDependencies": {
@@ -53,7 +57,11 @@
     "@types/node": "^20",
     "@types/react": "^19",
     "@types/react-dom": "^19",
+<<<<<<< HEAD
     "@types/ws": "^8.18.1",
+=======
+    "@types/ws": "^8.5.13",
+>>>>>>> origin/main
     "tailwindcss": "^4",
     "tsx": "^4.23.0",
     "typescript": "^5"
