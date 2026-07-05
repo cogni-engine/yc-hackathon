@@ -1,4 +1,4 @@
-import { Slack } from 'lucide-react';
+import { SlackLogo } from '@/components/SlackLogo';
 
 export default function IntegrationsPage() {
   return (
@@ -15,7 +15,7 @@ export default function IntegrationsPage() {
       <div className='rounded-md border border-border-default bg-surface-primary p-4'>
         <div className='flex items-center gap-3'>
           <div className='inline-flex size-10 shrink-0 items-center justify-center rounded-md bg-surface-secondary text-text-primary'>
-            <Slack className='size-5' />
+            <SlackLogo className='size-5' />
           </div>
           <div className='min-w-0 flex-1'>
             <h2 className='text-base font-medium text-text-primary'>Slack</h2>
