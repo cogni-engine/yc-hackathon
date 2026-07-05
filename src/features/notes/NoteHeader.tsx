@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { supabase } from '@/lib/supabase';
 import { renameNote } from './api';
 
@@ -8,9 +8,11 @@ import { renameNote } from './api';
 export function NoteHeader({ id }: { id: number }) {
   const [title, setTitle] = useState('');
   const [loaded, setLoaded] = useState(false);
+  const lastSavedTitleRef = useRef<string | null>(null);
 
   useEffect(() => {
     let cancelled = false;
+    setLoaded(false);
     supabase
       .from('notes')
       .select('title')
@@ -18,7 +20,9 @@ export function NoteHeader({ id }: { id: number }) {
       .maybeSingle()
       .then(({ data }) => {
         if (cancelled) return;
-        setTitle(data?.title ?? '');
+        const nextTitle = data?.title ?? '';
+        lastSavedTitleRef.current = nextTitle;
+        setTitle(nextTitle);
         setLoaded(true);
       });
     return () => {
@@ -26,20 +30,26 @@ export function NoteHeader({ id }: { id: number }) {
     };
   }, [id]);
 
-  function save() {
-    const next = title.trim() || 'Untitled';
-    if (next !== title) setTitle(next);
-    void renameNote(id, next);
+  function save(value: string) {
+    const next = value.trim() || 'Untitled';
+    setTitle(next);
+    if (next === lastSavedTitleRef.current) return;
+
+    lastSavedTitleRef.current = next;
+    void renameNote(id, next).catch(() => {
+      lastSavedTitleRef.current = null;
+    });
   }
 
   return (
     <input
       value={title}
       onChange={e => setTitle(e.target.value)}
-      onBlur={save}
+      onBlur={e => save(e.currentTarget.value)}
       onKeyDown={e => {
         if (e.key === 'Enter') {
           e.preventDefault();
+          save(e.currentTarget.value);
           (e.target as HTMLInputElement).blur();
         }
       }}
