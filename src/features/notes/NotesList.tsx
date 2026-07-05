@@ -13,6 +13,7 @@ import {
 } from 'lucide-react';
 import { listNotes, createNote, renameNote, softDeleteNote } from './api';
 import { supabase, WORKSPACE_ID, type Note } from '@/lib/supabase';
+import { useDisplayName } from '@/features/user/identity';
 
 /**
  * The list of notes. Used on the home page and in the `/notes/[id]` sidebar.
@@ -29,6 +30,7 @@ export function NotesList() {
   const pathname = usePathname();
   const activeId = Number(pathname.match(/^\/notes\/(\d+)/)?.[1]) || null;
   const editInputRef = useRef<HTMLInputElement>(null);
+  const { name, setName } = useDisplayName();
 
   const refresh = useCallback(async () => {
     try {
@@ -98,7 +100,14 @@ export function NotesList() {
 
   return (
     <div className='flex h-full flex-col'>
-      <div className='flex items-center justify-end px-2 py-2'>
+      <div className='flex items-center gap-2 px-2 py-2'>
+        <input
+          value={name}
+          onChange={e => setName(e.target.value)}
+          placeholder='Your name'
+          aria-label='Your display name'
+          className='min-w-0 flex-1 rounded-md bg-transparent px-1 py-1 text-sm text-text-primary outline-none placeholder:text-text-muted hover:bg-interactive-hover focus:bg-interactive-hover'
+        />
         <button
           type='button'
           onClick={onNew}
