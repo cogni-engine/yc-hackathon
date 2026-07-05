@@ -63,10 +63,27 @@ export function brainModel(): string {
   }
 }
 
+/**
+ * The reflex brain gets its OWN provider — it optimizes for raw latency, so
+ * an API call (no process spawn) beats the CLI even when the deep brain runs
+ * on the subscription. Priority: AGENT_FAST_BRAIN override > anthropic api >
+ * gemini api > same CLI as the deep brain. One Cogno cursor either way.
+ */
+export function fastProvider(): BrainProvider {
+  const pref = (process.env.AGENT_FAST_BRAIN || '').toLowerCase();
+  if (pref === 'gemini') return 'gemini';
+  if (pref === 'claude' || pref === 'anthropic') {
+    return process.env.ANTHROPIC_API_KEY ? 'anthropic-api' : 'claude-cli';
+  }
+  if (process.env.ANTHROPIC_API_KEY) return 'anthropic-api';
+  if (process.env.GEMINI_API_KEY) return 'gemini';
+  return brainProvider();
+}
+
 /** The reflex brain trades depth for latency — smallest capable model. */
 export function fastModel(): string {
   if (process.env.AGENT_FAST_MODEL) return process.env.AGENT_FAST_MODEL;
-  switch (brainProvider()) {
+  switch (fastProvider()) {
     case 'anthropic-api':
       return 'claude-haiku-4-5-20251001';
     case 'claude-cli':
@@ -189,6 +206,14 @@ Hard rules:
   * flowchart LR (PREFER LR — compact; use TD only for genuinely hierarchical trees) — ASCII-only node IDs, EVERY label in double quotes: A["ユーザー"] --> B["エディタ"]. No semicolons, no parens/braces/slashes outside quoted labels, no subgraph unless essential. Keep labels SHORT (≤8 chars when possible) and diagrams SMALL: max ~8 nodes.
   * sequenceDiagram — declare participants first (participant A as ユーザー), then A->>B: メッセージ. No quotes needed in messages; keep under ~8 exchanges.
   * stateDiagram-v2 — [*] --> 状態名, 状態名 --> 次の状態: ラベル. Simple names, no special characters.
+  * BAR/LINE charts (棒グラフ・折れ線) — xychart-beta:
+    xychart-beta
+        title "タイトル"
+        x-axis [Q1, Q2, Q3]
+        y-axis "件数" 0 --> 100
+        bar [20, 50, 80]
+    (use "line [...]" for 折れ線; axis categories ASCII or short Japanese, no commas inside)
+  * pie — pie title タイトル then lines like "項目A" : 40
   Tables (markdown |) are also welcome for comparisons. Never invent other embed types.
 - To MODIFY an existing diagram, use replace on that mermaid block with the complete new \`\`\`mermaid fence, keeping unchanged lines byte-identical — only changed lines animate (parts of the diagram visibly erased/redrawn). Prefer editing an existing diagram over adding a second one about the same thing.
 - HUMANS' WORDS ARE PROTECTED: delete or rewrite a human-written block ONLY when they explicitly asked for it (消して, まとめ直して, 英語にして, …). Fresh human text — including instructions they are still typing — must never be removed on your own judgment. Your own blocks and clearly-stale duplicates are fair game. Don't delete substance you merely disagree with.
@@ -214,14 +239,17 @@ You get the document as blocks (each with a blockId) plus which block the human 
 - They're mid-list → add the obviously-missing next item(s).
 - A very short direct question appeared → answer in one line.
 - You spot a clear typo or a leftover empty fragment ELSEWHERE → fix/delete it.
+- They ask for a diagram/chart (図/棒グラフ/フロー/pie…) → produce it NOW as a \`\`\`mermaid fence: flowchart LR (quoted labels A["ラベル"]), sequenceDiagram, stateDiagram-v2, xychart-beta (bar/line: title "…" / x-axis [..] / y-axis "…" 0 --> 100 / bar [..]), or pie (lines "項目" : 40). Valid syntax only.
+- They ask to delete something (消して/削除/remove) → delete the TARGET blocks (never their instruction itself).
 
 Direction following (do this proactively, a piece at a time):
 - Infer where the human is heading from their newest keystrokes — language, tone, structure — and start pulling the rest of the document toward it NOW. If their fresh text is an instruction mid-sentence ("この文章を英語に…", "図をもっと…"), START FULFILLING IT IMMEDIATELY on the TARGET content — the target is usually elsewhere in the doc, not where they're typing.
 - Blocks you wrote earlier (listed as yours) are DRAFTS: revise or delete them as the human's continuing input makes them stale. Reworking your own stale block beats adding a new one.
 
 Hard rules:
-- HUMANS' WORDS ARE SACRED: you may NEVER delete or rewrite a block a human wrote — not their notes, not their in-progress instructions. You may only append new content, or revise/delete blocks listed as YOURS. (The executor enforces this; violating ops are dropped.)
+- HUMANS' WORDS ARE SACRED: never delete a human's block; rewrite one ONLY to fulfill their explicit rewrite/translate/fix/add request. Otherwise append, or revise/delete blocks listed as YOURS. (The executor enforces this; violating ops are dropped.)
 - NEVER touch the block the human is actively editing (activeBlockId) — work after/below it or elsewhere.
+- Empty paragraphs are normal breathing room — leave them alone (delete one only if YOU created it this session, at most once). Don't keep re-proposing cosmetic cleanups; fulfilling the human's requests always comes first.
 - At most 2 ops, at most ~60 words of new content. Smaller is better; [] is fine when nothing clearly helps RIGHT NOW (the deep brain handles the rest later).
 - Same language as the human's CURRENT writing. No filler, no meta-commentary.
 - Ops: append_after (blockId | null = end), replace, delete — with markdown content.
@@ -553,7 +581,7 @@ Blocks YOU (Cogno) wrote earlier — revise/delete freely: ${
 
 Respond with your decision as JSON.`;
 
-  const provider = brainProvider();
+  const provider = fastProvider();
   let text: string;
   if (provider === 'anthropic-api') {
     const client = new Anthropic({
@@ -583,6 +611,8 @@ Respond with your decision as JSON.`;
         responseMimeType: 'application/json',
         responseSchema: GEMINI_SCHEMA,
         temperature: 0.4,
+        // Reflex = raw latency; no thinking budget.
+        thinkingConfig: { thinkingBudget: 0 },
       },
     });
     text = response.text ?? '{}';

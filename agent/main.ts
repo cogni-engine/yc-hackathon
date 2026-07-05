@@ -5,6 +5,7 @@ import {
   pingBrain,
   brainProvider,
   brainModel,
+  fastProvider,
   fastModel,
   type AgentOp,
 } from './brain';
@@ -19,9 +20,9 @@ import { listNotes } from './notes';
 const FAST_DELAY_MS = 350;
 const FAST_LOOP_GAP_MS = 400; // pause between engaged-loop rounds
 const FAST_IDLE_ROUNDS = 2; // consecutive no-op rounds before disengaging
-const DEEP_QUIET_MS = 6000;
-const DEEP_COOLDOWN_MS = 18000;
-const MAX_SESSIONS = 6; // most-recent notes to join concurrently
+const DEEP_QUIET_MS = 3500;
+const DEEP_COOLDOWN_MS = 9000;
+const MAX_SESSIONS = Number(process.env.AGENT_MAX_SESSIONS) || 6; // concurrent notes
 const NOTES_POLL_MS = 15000; // how often to look for new notes
 
 function log(...args: unknown[]): void {
@@ -224,12 +225,29 @@ async function watchNote(
     prevBlocks = new Map(after.map(b => [b.id ?? '', b.markdown] as const));
   };
 
-  /** Record which blocks an action touched, so the brains know their drafts. */
-  const trackOwn = (before: Map<string, string>) => {
+  /**
+   * Record which blocks OUR ops touched. Precision matters: while we edit,
+   * the human keeps typing — a naive before/after diff would claim THEIR
+   * fresh block as ours, and the next round would happily "revise" (eat) it.
+   */
+  const trackOwn = (
+    before: Map<string, string>,
+    ops: AgentOp[],
+    humanFresh: Set<string>
+  ) => {
+    for (const op of ops) {
+      if (op.blockId && op.action !== 'delete') ownBlocks.add(op.blockId);
+    }
     for (const b of session.blocks()) {
-      if (b.id && before.get(b.id) !== b.markdown) ownBlocks.add(b.id);
+      if (!b.id || humanFresh.has(b.id)) continue;
+      if (!before.has(b.id)) ownBlocks.add(b.id); // newly created by us
     }
   };
+
+  // Deep-brain priority: when the burst has settled long enough, the reflex
+  // loop yields so the deep pass isn't starved behind the busy lock.
+  let deepDueAt = Infinity;
+  const deepDue = () => Date.now() >= deepDueAt;
 
   // Engaged work loop: the human started typing. Keep cycling — look, make a
   // tiny out-of-the-way edit, look again — until nothing new is happening.
@@ -242,6 +260,9 @@ async function watchNote(
     let loopBaseline = new Map(prevBlocks);
     let idleRounds = 0;
     let lastLoopHash = '';
+    let rewriteAskActive = false;
+    let deleteAskActive = false;
+    let blockedRetries = 0;
     try {
       while (!destroyed && idleRounds < FAST_IDLE_ROUNDS) {
         const blocks = session.blocks();
@@ -253,15 +274,14 @@ async function watchNote(
         }
         lastLoopHash = hash;
 
-        const changedIds = blocks
-          .filter(
-            b =>
-              b.id &&
-              loopBaseline.get(b.id) !== b.markdown &&
-              b.markdown &&
-              !ownBlocks.has(b.id)
-          )
-          .map(b => b.id as string);
+        // Any block that changed while we were NOT editing was touched by a
+        // human — including blocks we created (they typed into our paragraph).
+        // Ownership is revoked on human touch: it's their text now.
+        const humanChanged = blocks.filter(
+          b => b.id && loopBaseline.get(b.id) !== b.markdown && b.markdown
+        );
+        for (const b of humanChanged) ownBlocks.delete(b.id as string);
+        const changedIds = humanChanged.map(b => b.id as string);
         loopBaseline = new Map(blocks.map(b => [b.id ?? '', b.markdown] as const));
         const activeBlockId = changedIds[changedIds.length - 1] ?? null;
 
@@ -282,16 +302,54 @@ async function watchNote(
           activeBlockId,
           ownBlockIds: [...ownBlocks],
         });
-        // HARD GUARD: the reflex may only add content, or revise its OWN
-        // blocks. Humans' words are never deleted/rewritten by the reflex —
-        // that's how fresh keystrokes were getting eaten.
+        // HARD GUARD: what the human is typing RIGHT NOW is untouchable.
+        // The reflex may append anywhere and revise/delete its OWN blocks.
+        // Replacing an OLDER human block is allowed only while the human's
+        // fresh text contains an explicit rewrite ask (訳して/直して/追加して…)
+        // — that enables "この文章を英語に" without ever eating notes.
+        const freshHuman = new Set(changedIds);
+        const freshText = blocks
+          .filter(b => b.id && freshHuman.has(b.id))
+          .map(b => b.markdown)
+          .join('\n');
+        // A rewrite ask stays live for the whole engagement, so multi-round
+        // sweeps (translate block by block) keep going after the ask scrolls
+        // out of the fresh diff.
+        if (
+          /にして|訳し|翻訳|直して|修正|書き換え|追加して|加えて|入れて|translate|rewrite|update|fix|add/i.test(
+            freshText
+          )
+        ) {
+          rewriteAskActive = true;
+        }
+        if (/消して|消せ|けして|削除|消去|delete|remove/i.test(freshText)) {
+          deleteAskActive = true;
+        }
         const ops = rawOps.filter(
           op =>
             op.action === 'append_after' ||
-            (op.blockId != null && ownBlocks.has(op.blockId))
+            (op.blockId != null && ownBlocks.has(op.blockId)) ||
+            (op.action === 'replace' &&
+              op.blockId != null &&
+              !freshHuman.has(op.blockId) &&
+              rewriteAskActive) ||
+            (op.action === 'delete' &&
+              op.blockId != null &&
+              !freshHuman.has(op.blockId) &&
+              deleteAskActive)
         );
         if (ops.length < rawOps.length) {
           log(`${tag} reflex: blocked ${rawOps.length - ops.length} op(s) targeting human text`);
+        }
+        // All ops blocked = usually round-1 freshness (seed just arrived);
+        // give the model a couple of retry rounds before disengaging — the
+        // same op is legal once the text is no longer "just typed".
+        if (rawOps.length > 0 && ops.length === 0 && blockedRetries < 3) {
+          blockedRetries++;
+          idleRounds = 0;
+          lastLoopHash = ''; // force a fresh look next round
+          await sleep(FAST_LOOP_GAP_MS + 400);
+          continue;
         }
         if (ops.length > 0) {
           log(`${tag} reflex: ${thought} → ${ops.length} op(s)`);
@@ -301,13 +359,15 @@ async function watchNote(
           session.setTyping(true);
           await executeOps(session, ops);
           session.setTyping(false);
-          trackOwn(before);
+          trackOwn(before, ops, freshHuman);
           idleRounds = 0;
           // Our own edits are part of lastLoopHash next round via re-snapshot.
           lastLoopHash = '';
         } else {
           idleRounds++;
         }
+        // The deep brain must not starve behind a chatty reflex loop.
+        if (deepDue()) break;
         await sleep(FAST_LOOP_GAP_MS);
       }
     } catch (err) {
@@ -328,20 +388,38 @@ async function watchNote(
   const deepAct = async () => {
     if (destroyed) return;
     if (busy) {
+      // The reflex loop checks deepDue() and yields; retry shortly instead of
+      // waiting for the next human keystroke.
       missedDeep = true;
+      if (deepTimer) clearTimeout(deepTimer);
+      deepTimer = setTimeout(() => void deepAct(), 1500);
       return;
     }
+    deepDueAt = Infinity;
     busy = true;
     try {
       const { blocks, hash, changedIds } = snapshot();
       if (hash === lastHash) return;
 
       log(`${tag} thinking… (${blocks.length} blocks, changed: ${changedIds.join(', ') || '-'})`);
-      const { thought, ops } = await brain.think({
+      const { thought, ops: rawOps } = await brain.think({
         blocks,
         changedIds,
         ownBlockIds: [...ownBlocks],
       });
+      // GUARD: the human's newest block (their latest message/instruction)
+      // may never be deleted or rewritten — even by the deep brain.
+      const newestHuman = changedIds[changedIds.length - 1];
+      const ops = rawOps.filter(
+        op =>
+          op.action === 'append_after' ||
+          op.blockId == null ||
+          op.blockId !== newestHuman ||
+          ownBlocks.has(op.blockId)
+      );
+      if (ops.length < rawOps.length) {
+        log(`${tag} blocked ${rawOps.length - ops.length} op(s) on the human's newest block`);
+      }
       log(`${tag} decision: ${thought} → ${ops.length} op(s)`);
       if (ops.length > 0) {
         const before = new Map(
@@ -349,7 +427,7 @@ async function watchNote(
         );
         session.setTyping(true);
         await executeOps(session, ops);
-        trackOwn(before);
+        trackOwn(before, ops, new Set(changedIds));
         log(`${tag} done editing.`);
       }
     } catch (err) {
@@ -371,6 +449,7 @@ async function watchNote(
     if (destroyed) return;
     if (deepTimer) clearTimeout(deepTimer);
     const wait = Math.max(DEEP_QUIET_MS, lastDeepEnd + DEEP_COOLDOWN_MS - Date.now());
+    deepDueAt = Date.now() + wait;
     deepTimer = setTimeout(() => void deepAct(), wait);
   };
 
@@ -467,7 +546,7 @@ export async function main(): Promise<void> {
   try {
     const pong = await pingBrain();
     log(
-      `brain OK (${brainProvider()} / deep=${brainModel()} fast=${fastModel()}, reply="${pong}")`
+      `brain OK (deep=${brainProvider()}:${brainModel()} fast=${fastProvider()}:${fastModel()}, reply="${pong}")`
     );
   } catch (err) {
     log(
