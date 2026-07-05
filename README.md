@@ -25,8 +25,9 @@ Collaboration (Y.js), the slash (`/`) block menu, tables, Mermaid diagrams,
 - **AI collaborator** — run `pnpm agent` and "Cogno AI" joins the room as a real
   realtime collaborator: its own named caret (green), human-like cursor moves,
   text typed character-by-character, Mermaid diagrams dropped in as blocks, and
-  select-hold-delete edits. It watches the doc, thinks with Gemini, and edits
-  through the exact same Y.js/WebSocket path as a human tab.
+  select-hold-delete edits. It watches the doc, thinks with Claude (keeping a
+  running memory of what it has already contributed), and edits through the
+  exact same Y.js/WebSocket path as a human tab.
 
 ## Architecture
 
@@ -36,7 +37,7 @@ Two servers. No database.
 browser ──┬─ HTTP ─────▶ ① Next.js app (UI + /api/ai → Gemini)   :3000  (deploy: Vercel)
           └─ WebSocket ▶ ② Hocuspocus realtime server            :1234  (deploy: Render)
                               ▲
-③ AI agent (pnpm agent) ──────┘  headless TipTap client + Gemini — joins rooms
+③ AI agent (pnpm agent) ──────┘  headless TipTap client + Claude — joins rooms
                                  like any other collaborator (awareness cursor,
                                  CRDT edits), zero changes to ① or ②
 ```
@@ -106,13 +107,17 @@ behaves like a human teammate:
 - **Presence** — a named green caret via the same y-protocols awareness the
   browser's CollaborationCaret renders. No frontend changes needed.
 - **Trigger** — waits until humans stop typing (~2.5s), reads the doc as
-  blockId-addressed markdown, asks Gemini (structured JSON ops), then edits.
+  blockId-addressed markdown, asks Claude (structured JSON ops via
+  `output_config.format`), then edits.
+- **Memory** — the brain keeps a running Claude conversation for the whole
+  session, so it remembers its own past contributions and builds on them
+  instead of re-reacting from scratch (and won't repeat itself).
 - **Choreography** — caret moves & settles before writing; prose is typed
   character-by-character; structured blocks (```mermaid, lists, tables) drop in
   whole; deletions select-hold-then-delete so humans see what's happening.
-- Env (auto-read from `.env.local`): `GEMINI_API_KEY` (required),
-  `NEXT_PUBLIC_HOCUSPOCUS_URL`/`AGENT_HOCUSPOCUS_URL`, `GEMINI_MODEL`,
-  `AGENT_ROOM`, `AGENT_NAME`, `AGENT_COLOR`.
+- Env (auto-read from `.env.local`): `ANTHROPIC_API_KEY` (required),
+  `NEXT_PUBLIC_HOCUSPOCUS_URL`/`AGENT_HOCUSPOCUS_URL`, `AGENT_MODEL`
+  (default `claude-opus-4-8`), `AGENT_ROOM`, `AGENT_NAME`, `AGENT_COLOR`.
 
 E2E smoke test without a browser — a scripted "fake human" types a question
 and reports the AI's presence + edits:
