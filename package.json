@@ -40,6 +40,7 @@
     "react-dom": "19.2.4",
     "tailwind-merge": "^2.5.1",
     "tippy.js": "^6.3.7",
+    "ws": "^8.18.0",
     "yjs": "^13.6.18"
   },
   "devDependencies": {
@@ -47,6 +48,7 @@
     "@types/node": "^20",
     "@types/react": "^19",
     "@types/react-dom": "^19",
+    "@types/ws": "^8.5.13",
     "tailwindcss": "^4",
     "typescript": "^5"
   }
