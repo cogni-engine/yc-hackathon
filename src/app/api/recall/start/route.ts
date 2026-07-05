@@ -12,19 +12,25 @@ import { NextResponse } from 'next/server';
  * Env:
  *   RECALL_API_KEY     required — workspace API key
  *   RECALL_REGION      e.g. "us-west-2" (host is https://{region}.recall.ai)
- *   RECALL_WEBHOOK_URL public URL of the hocuspocus webhook (…/recall/webhook)
+ *   RECALL_WEBHOOK_URL optional — where Recall sends transcripts. Defaults to
+ *                      this app's own /api/recall/webhook (needs a public URL;
+ *                      Recall can't reach localhost, so set it to an ngrok URL
+ *                      when developing locally).
  *   RECALL_LANGUAGE    transcription language code, default "ja"
  */
 export async function POST(req: Request) {
   const apiKey = process.env.RECALL_API_KEY;
   const region = process.env.RECALL_REGION;
-  const webhookUrl = process.env.RECALL_WEBHOOK_URL;
-  if (!apiKey || !region || !webhookUrl) {
+  if (!apiKey || !region) {
     return NextResponse.json(
-      { error: 'RECALL_API_KEY / RECALL_REGION / RECALL_WEBHOOK_URL not set' },
+      { error: 'RECALL_API_KEY / RECALL_REGION not set' },
       { status: 503 }
     );
   }
+  // Default the transcript webhook to this app's own route.
+  const webhookUrl =
+    process.env.RECALL_WEBHOOK_URL ||
+    new URL('/api/recall/webhook', req.url).toString();
 
   const { meetUrl, noteId } = await req.json();
   if (!meetUrl || !noteId) {
