@@ -98,10 +98,7 @@ export function NotesList() {
 
   return (
     <div className='flex h-full flex-col'>
-      <div className='flex items-center justify-between px-3 py-3'>
-        <span className='text-xs font-medium uppercase tracking-wide text-text-muted'>
-          Notes
-        </span>
+      <div className='flex items-center justify-end px-2 py-2'>
         <button
           type='button'
           onClick={onNew}

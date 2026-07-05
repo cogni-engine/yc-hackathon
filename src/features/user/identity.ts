@@ -1,7 +1,11 @@
 'use client';
 
+import { useEffect, useState } from 'react';
+
 // Per-browser identity for cursor labels only. No auth — this does not gate
 // access to anything. Stored in localStorage: a stable id + an editable name.
+// localStorage is per browser profile (shared across tabs), so all tabs are the
+// same identity; it persists across reloads.
 
 const ID_KEY = 'pillow_client_id';
 const NAME_KEY = 'pillow_display_name';
@@ -22,4 +26,17 @@ export function getDisplayName(): { id: string; name: string } {
 
 export function setDisplayName(name: string) {
   localStorage.setItem(NAME_KEY, name.trim());
+}
+
+/** Editable display name. Persists to localStorage. */
+export function useDisplayName() {
+  const [name, setName] = useState('');
+  useEffect(() => {
+    setName(getDisplayName().name);
+  }, []);
+  function update(next: string) {
+    setName(next);
+    setDisplayName(next);
+  }
+  return { name, setName: update };
 }
