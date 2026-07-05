@@ -2,7 +2,7 @@
 
 import { AppSidebar } from '@/components/AppSidebar';
 
-export default function NotesLayout({
+export default function IntegrationsLayout({
   children,
 }: {
   children: React.ReactNode;
