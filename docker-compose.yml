@@ -1,16 +1,32 @@
-# Local one-shot stack: realtime server + Next.js app.
+# Local one-shot stack: gbrain + realtime server + Next.js app.
 #   docker compose up --build
 # Then open http://localhost:3000 (create a user, then a note).
+# gbrain bridge → http://localhost:3131 (/health, /write, /query — a thin HTTP
+# wrapper over the gbrain CLI; see gbrain/bridge.ts).
 services:
+  gbrain:
+    build: ./gbrain
+    ports:
+      - "3131:3131"
+    # OPENAI_API_KEY (or VOYAGE_API_KEY / ZEROENTROPY_API_KEY) for embeddings.
+    env_file:
+      - .env.local
+    # Persist the local PGLite brain + config across restarts.
+    volumes:
+      - gbrain-data:/root/.gbrain
+
   hocuspocus:
     build: ./hocuspocus
     ports:
       - "1234:1234"
-      # Recall.ai transcript webhook (point ngrok/cloudflared at this port).
-      - "1235:1235"
     # SUPABASE_URL / SUPABASE_ANON_KEY for note persistence.
     env_file:
       - .env.local
+    # Reach the gbrain bridge by its compose service name to mirror notes.
+    environment:
+      GBRAIN_BRIDGE_URL: http://gbrain:3131
+    depends_on:
+      - gbrain
 
   web:
     build:
@@ -26,5 +42,12 @@ services:
     # Server-side runtime env (GEMINI_API_KEY, GEMINI_MODEL) for /api/ai.
     env_file:
       - .env.local
+    # /api/ai and /api/gbrain reach the bridge by its compose service name.
+    environment:
+      GBRAIN_BRIDGE_URL: http://gbrain:3131
     depends_on:
       - hocuspocus
+      - gbrain
+
+volumes:
+  gbrain-data:

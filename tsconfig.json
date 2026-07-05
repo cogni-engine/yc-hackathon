@@ -31,5 +31,5 @@
     ".next/dev/types/**/*.ts",
     "**/*.mts"
   ],
-  "exclude": ["node_modules", "hocuspocus", "agent"]
+  "exclude": ["node_modules", "hocuspocus", "gbrain", "agent"]
 }

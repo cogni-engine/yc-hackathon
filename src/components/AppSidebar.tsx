@@ -11,7 +11,9 @@ const tabs = [
 ];
 
 function isActiveTab(pathname: string, href: string) {
-  if (href === '/notes') return pathname === '/' || pathname.startsWith('/notes');
+  if (href === '/notes') {
+    return pathname === '/' || pathname.startsWith('/notes');
+  }
   return pathname === href || pathname.startsWith(`${href}/`);
 }
 
