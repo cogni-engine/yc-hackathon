@@ -1,6 +1,6 @@
 'use client';
 
-import { useMemo } from 'react';
+import { useEffect, useMemo } from 'react';
 import { EditorContent } from '@tiptap/react';
 import {
   useCollaborativeEditor,
@@ -10,6 +10,7 @@ import { TableControls } from '@/components/tiptap/TableControls';
 import { ImageControls } from '@/components/tiptap/ImageControls';
 import { EditorStyles } from '@/features/notes/lib/editorStyles';
 import { CollaborativeEditorStyles } from '@/features/notes/lib/collaborativeEditorStyles';
+import { runAiCursorDemo } from './aiCursorDemo';
 
 interface CanvasEditorProps {
   /** Room id — the Hocuspocus document is `canvas:{room}`. */
@@ -53,6 +54,30 @@ export function CanvasEditor({
     extensions: extensionOptions,
     proseSizeClassName: 'prose-base',
   });
+
+  useEffect(() => {
+    if (!editor || typeof window === 'undefined') return;
+
+    let autoRunTimer: number | null = null;
+
+    window.runAiCursorDemo = () => runAiCursorDemo(editor);
+
+    const params = new URLSearchParams(window.location.search);
+    if (params.has('aiCursorDemo')) {
+      autoRunTimer = window.setTimeout(() => {
+        void runAiCursorDemo(editor);
+      }, 600);
+    }
+
+    return () => {
+      if (autoRunTimer !== null) {
+        window.clearTimeout(autoRunTimer);
+      }
+      if (window.runAiCursorDemo) {
+        delete window.runAiCursorDemo;
+      }
+    };
+  }, [editor]);
 
   return (
     <div className='relative min-h-full w-full'>

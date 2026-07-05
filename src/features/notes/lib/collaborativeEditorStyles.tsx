@@ -55,6 +55,67 @@ export function CollaborativeEditorStyles() {
         transition: opacity 0.1s ease;
       }
 
+      .ai-cursor {
+        position: relative;
+        display: inline;
+        pointer-events: none;
+      }
+
+      .ai-cursor__caret {
+        position: relative;
+        display: inline-block;
+        width: 2px;
+        height: 1.15em;
+        margin-left: -1px;
+        margin-right: -1px;
+        pointer-events: none;
+        vertical-align: text-bottom;
+        border-radius: 999px;
+        box-shadow: 0 0 0 2px rgba(14, 165, 233, 0.16);
+      }
+
+      .ai-cursor__caret::after {
+        content: '';
+        position: absolute;
+        left: 50%;
+        top: -4px;
+        width: 8px;
+        height: 8px;
+        border-radius: 999px;
+        background: inherit;
+        transform: translateX(-50%);
+        animation: ai-cursor-pulse 1.1s ease-in-out infinite;
+      }
+
+      .ai-cursor__label {
+        position: absolute;
+        bottom: calc(100% + 6px);
+        left: -2px;
+        font-size: 10px;
+        font-weight: 700;
+        line-height: 1;
+        white-space: nowrap;
+        color: white;
+        padding: 3px 6px;
+        border-radius: 6px 6px 6px 0;
+        user-select: none;
+        pointer-events: none;
+        z-index: 60;
+        box-shadow: 0 6px 18px rgba(15, 23, 42, 0.22);
+      }
+
+      @keyframes ai-cursor-pulse {
+        0%,
+        100% {
+          opacity: 0.45;
+          transform: translateX(-50%) scale(0.85);
+        }
+        50% {
+          opacity: 1;
+          transform: translateX(-50%) scale(1.15);
+        }
+      }
+
       /* Collaborator avatars in header */
       .collaborator-badge {
         display: inline-flex;
