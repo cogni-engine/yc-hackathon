@@ -107,6 +107,10 @@ export function useCollaborativeEditor({
       return;
     }
 
+    setIsConnected(false);
+    setIsSynced(false);
+    setConnectionStatus('connecting');
+
     const hocuspocusUrl =
       process.env.NEXT_PUBLIC_HOCUSPOCUS_URL || 'ws://localhost:1234';
 
