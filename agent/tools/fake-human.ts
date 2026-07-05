@@ -28,7 +28,7 @@ async function run() {
 
   const session = new AgentSession({
     url,
-    room,
+    docName: /^\d+$/.test(room) ? `note:${room}` : `canvas:${room}`,
     name: 'Fake Human',
     color: '#F98181',
   });

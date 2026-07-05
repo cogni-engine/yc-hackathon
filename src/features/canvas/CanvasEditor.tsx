@@ -369,7 +369,12 @@ export function CanvasEditor({
           <ImageControls editor={editor} />
           <SelectionSummarize editor={editor} />
           <AiEditBar editor={editor} />
-          <AutoAiDebouncedEdit editor={editor} />
+          {/* Client-side auto AI. Set NEXT_PUBLIC_AUTO_AI=0 when the
+              server-side collaborator agent (pnpm agent) owns the doc —
+              otherwise the two AIs trigger each other in a loop. */}
+          {process.env.NEXT_PUBLIC_AUTO_AI !== '0' && (
+            <AutoAiDebouncedEdit editor={editor} />
+          )}
         </>
       ) : (
         <div className='text-sm text-neutral-400'>{placeholder}</div>
