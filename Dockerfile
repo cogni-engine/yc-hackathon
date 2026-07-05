@@ -12,7 +12,7 @@ WORKDIR /app
 COPY --from=deps /app/node_modules ./node_modules
 COPY . .
 # NEXT_PUBLIC_* is inlined at build time; the browser connects to this URL.
-ARG NEXT_PUBLIC_HOCUSPOCUS_URL=ws://localhost:1235
+ARG NEXT_PUBLIC_HOCUSPOCUS_URL=ws://localhost:1234
 ENV NEXT_PUBLIC_HOCUSPOCUS_URL=$NEXT_PUBLIC_HOCUSPOCUS_URL
 RUN pnpm build
 

@@ -29,7 +29,7 @@ Two servers. No database.
 ```
 browser
   ├─ HTTP ─────▶ ① Next.js app (UI + /api/ai → Gemini)   :3000  (deploy: Vercel)
-  └─ WebSocket ▶ ② Hocuspocus realtime server            :1235  (deploy: Render)
+  └─ WebSocket ▶ ② Hocuspocus realtime server            :1234  (deploy: Render)
 ```
 
 - **① Next.js app** (repo root) — serves the editor UI and the `/api/ai` route,
@@ -61,7 +61,7 @@ docker compose up --build
 ```
 
 - App → http://localhost:3000 (open two tabs to collaborate)
-- Realtime server → host `:1235` (container `:1234`)
+- Realtime server → `:1234`
 
 `GEMINI_API_KEY` is passed into the app container via `env_file: .env.local`, so
 the Summarize action works in the compose stack. Stop with `docker compose down`.
@@ -74,18 +74,18 @@ Two processes:
 # 1) realtime server (terminal A)
 cd hocuspocus
 npm install
-PORT=1235 npm start        # ws://localhost:1235
+npm start                  # ws://localhost:1234
 
 # 2) Next.js app (terminal B)
 pnpm install
 pnpm dev                   # http://localhost:3000
 ```
 
-`.env.local` already points the app at `ws://localhost:1235`.
+`.env.local` already points the app at `ws://localhost:1234`.
 
-> Ports: cogno's own hocuspocus uses 1234, so this app uses 1235 to avoid a clash.
 > Don't run `docker compose` and `pnpm dev` at the same time — they bind the same
-> ports (3000 / 1235).
+> ports (3000 / 1234). If port 1234 is taken (e.g. another Hocuspocus running),
+> set `PORT=<other>` for the server and update `NEXT_PUBLIC_HOCUSPOCUS_URL`.
 
 ## Deploy
 

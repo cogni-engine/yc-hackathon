@@ -5,14 +5,14 @@ services:
   hocuspocus:
     build: ./hocuspocus
     ports:
-      - "1235:1234" # host 1235 → container 1234 (avoids cogno's local 1234)
+      - "1234:1234"
 
   web:
     build:
       context: .
       args:
         # Baked into the client bundle; the browser dials this from the host.
-        NEXT_PUBLIC_HOCUSPOCUS_URL: ws://localhost:1235
+        NEXT_PUBLIC_HOCUSPOCUS_URL: ws://localhost:1234
     ports:
       - "3000:3000"
     # Server-side runtime env (GEMINI_API_KEY, GEMINI_MODEL) for /api/ai.
