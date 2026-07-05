@@ -1,22 +1,27 @@
 # Local one-shot stack: realtime server + Next.js app.
 #   docker compose up --build
-# Then open http://localhost:3000 (open two tabs to collaborate).
+# Then open http://localhost:3000 (create a user, then a note).
 services:
   hocuspocus:
     build: ./hocuspocus
     ports:
       - "1234:1234"
+    # SUPABASE_URL / SUPABASE_ANON_KEY for note persistence.
+    env_file:
+      - .env.local
 
   web:
     build:
       context: .
       args:
-        # Baked into the client bundle; the browser dials this from the host.
+        # NEXT_PUBLIC_* are baked into the client bundle at build time.
         NEXT_PUBLIC_HOCUSPOCUS_URL: ws://localhost:1234
+        # Public client values (also shipped in the browser bundle).
+        NEXT_PUBLIC_SUPABASE_URL: https://bkqjlxozcflgtasgfqjy.supabase.co
+        NEXT_PUBLIC_SUPABASE_ANON_KEY: sb_publishable_9hwMpN3fze6m_qrDFHXRtw_sZVwqOd8
     ports:
       - "3000:3000"
     # Server-side runtime env (GEMINI_API_KEY, GEMINI_MODEL) for /api/ai.
-    # NEXT_PUBLIC_* in here is ignored at runtime (already baked at build).
     env_file:
       - .env.local
     depends_on:

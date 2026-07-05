@@ -8,7 +8,9 @@
     "start": "tsx src/index.ts"
   },
   "dependencies": {
+    "@hocuspocus/extension-database": "^2.15.3",
     "@hocuspocus/server": "^2.15.0",
+    "@supabase/supabase-js": "^2.110.0",
     "tsx": "^4.19.2"
   },
   "engines": {
