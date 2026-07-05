@@ -3,7 +3,7 @@ import path from 'node:path';
 
 /**
  * Load `.env.local` from the repo root into process.env (existing values win),
- * so the agent shares GEMINI_API_KEY etc. with the Next.js app without extra
+ * so the agent shares ANTHROPIC_API_KEY etc. with the Next.js app without extra
  * setup. Minimal parser — KEY=VALUE lines, `#` comments, optional quotes.
  */
 export function loadEnv(): void {

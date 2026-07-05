@@ -10,6 +10,7 @@
     "agent": "tsx agent/index.ts"
   },
   "dependencies": {
+    "@anthropic-ai/sdk": "^0.68.0",
     "@excalidraw/excalidraw": "^0.18.1",
     "@floating-ui/dom": "^1.7.4",
     "@google/genai": "^2.10.0",
