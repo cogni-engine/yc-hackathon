@@ -58,12 +58,10 @@ export default function GbrainDevPage() {
   }, [refreshLog]);
 
   useEffect(() => {
-    fetch('/api/gbrain/query', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ q: 'ping', mode: 'search' }),
-    })
-      .then(r => setHealth(r.ok ? 'reachable' : `error ${r.status}`))
+    // Liveness check via a dedicated route so it doesn't show up in the query log.
+    fetch('/api/gbrain/health', { cache: 'no-store' })
+      .then(r => r.json())
+      .then(d => setHealth(d.ok ? 'reachable' : 'unreachable'))
       .catch(() => setHealth('unreachable'));
   }, []);
 

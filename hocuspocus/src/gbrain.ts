@@ -14,7 +14,16 @@ const BRIDGE_TOKEN = process.env.GBRAIN_BRIDGE_TOKEN || '';
 
 /** Concatenate the text of one XML node (block or inline), recursively. */
 function nodeText(node: Y.XmlElement | Y.XmlFragment | Y.XmlText): string {
-  if (node instanceof Y.XmlText) return node.toString();
+  if (node instanceof Y.XmlText) {
+    // toString() serializes marks as XML tags (<bold>…</bold>); the delta gives
+    // the raw inserted characters, so bold/italic/etc. don't leak into the text.
+    return node
+      .toDelta()
+      .map((op: { insert?: unknown }) =>
+        typeof op.insert === 'string' ? op.insert : ''
+      )
+      .join('');
+  }
   let out = '';
   node.forEach(child => {
     out += nodeText(child as Y.XmlElement | Y.XmlText);
