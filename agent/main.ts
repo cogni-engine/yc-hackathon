@@ -6,9 +6,12 @@ import {
   brainModel,
   type AgentOp,
 } from './brain';
+import { listNotes } from './notes';
 
-const QUIET_MS = 2500; // human stopped typing for this long → consider acting
-const COOLDOWN_MS = 8000; // min gap between two agent actions
+const QUIET_MS = 2000; // human stopped typing for this long → consider acting
+const COOLDOWN_MS = 4000; // min gap between two agent actions per note
+const MAX_SESSIONS = 6; // most-recent notes to join concurrently
+const NOTES_POLL_MS = 15000; // how often to look for new notes
 
 function log(...args: unknown[]): void {
   const t = new Date().toISOString().slice(11, 19);
@@ -16,7 +19,7 @@ function log(...args: unknown[]): void {
 }
 
 function hashBlocks(blocks: BlockSnapshot[]): string {
-  return blocks.map(b => `${b.id}:${b.markdown}`).join('\u0000');
+  return blocks.map(b => `${b.id}:${b.markdown}`).join(' ');
 }
 
 /** Markdown → segments; fenced code blocks stay intact, else split on blank lines. */
@@ -64,8 +67,7 @@ function isPlainProse(seg: string): boolean {
 /**
  * Insert markdown at `pos` like a human would: prose paragraphs are typed
  * character-by-character with the caret following; structured blocks
- * (diagrams, lists, tables, headings) drop in whole after a beat — the visual
- * grammar of a paste.
+ * (diagrams, lists, tables) drop in whole after a beat.
  */
 async function insertHumanized(
   session: AgentSession,
@@ -75,7 +77,6 @@ async function insertHumanized(
   let cursor = pos;
   for (const seg of splitSegments(markdown)) {
     if (isPlainProse(seg)) {
-      // Open a fresh empty paragraph, then type into it.
       session.insertNodeAt(cursor, { type: 'paragraph' });
       await session.moveCursorTo(cursor + 1, 150);
       const end = await session.typeText(seg, cursor + 1);
@@ -91,8 +92,7 @@ async function insertHumanized(
 }
 
 async function executeOps(session: AgentSession, ops: AgentOp[]): Promise<void> {
-  // Consecutive append_after ops on the same anchor chain in document order
-  // (op2 goes after op1's content, not squeezed between anchor and op1).
+  // Consecutive append_after ops on the same anchor chain in document order.
   let lastAppend: { blockId: string | null; end: number } | null = null;
 
   for (const op of ops) {
@@ -136,38 +136,30 @@ async function executeOps(session: AgentSession, ops: AgentOp[]): Promise<void> 
   }
 }
 
-export async function main(): Promise<void> {
-  const room = process.env.AGENT_ROOM || process.argv[2] || 'main';
-  const url =
-    process.env.AGENT_HOCUSPOCUS_URL ||
-    process.env.NEXT_PUBLIC_HOCUSPOCUS_URL ||
-    'ws://localhost:1234';
-  const name = process.env.AGENT_NAME || 'Cogno AI';
-  const color = process.env.AGENT_COLOR || '#10B981';
+interface WatcherHandle {
+  destroy(): void;
+}
 
-  // The brain keeps a running conversation, so it remembers what it has
-  // already contributed to this room across the whole session.
+/** Join one note's doc and co-edit it until destroyed. */
+async function watchNote(
+  noteId: number | string,
+  opts: { url: string; name: string; color: string }
+): Promise<WatcherHandle> {
+  const tag = `[note:${noteId}]`;
   const brain = new CognoBrain();
-
-  // Prove the configured model is reachable before joining the room.
-  try {
-    const pong = await pingBrain();
-    log(`brain OK (${brainProvider()} / model=${brainModel()}, reply="${pong}")`);
-  } catch (err) {
-    log(
-      `⚠ brain (${brainProvider()}) unreachable — the agent will join but cannot think:`,
-      err instanceof Error ? err.message : err
-    );
-  }
-
-  const session = new AgentSession({ url, room, name, color });
-  log(`connecting to ${url} room canvas:${room} as "${name}" ${color}`);
+  const session = new AgentSession({
+    url: opts.url,
+    docName: `note:${noteId}`,
+    name: opts.name,
+    color: opts.color,
+  });
   await session.connect();
-  log(`synced. document is ${session.markdown().length} chars.`);
+  log(`${tag} joined (${session.markdown().length} chars)`);
 
   let ready = false;
   let executing = false;
   let missed = false;
+  let destroyed = false;
   let timer: ReturnType<typeof setTimeout> | null = null;
   let lastActEnd = 0;
   let lastHash = hashBlocks(session.blocks());
@@ -176,7 +168,7 @@ export async function main(): Promise<void> {
   );
 
   const act = async () => {
-    if (executing) return;
+    if (executing || destroyed) return;
     executing = true;
     try {
       const blocks = session.blocks();
@@ -187,15 +179,15 @@ export async function main(): Promise<void> {
         .filter(b => b.id && prevBlocks.get(b.id) !== b.markdown && b.markdown)
         .map(b => b.id as string);
 
-      log(`thinking… (${blocks.length} blocks, changed: ${changedIds.join(', ') || '-'})`);
+      log(`${tag} thinking… (${blocks.length} blocks, changed: ${changedIds.join(', ') || '-'})`);
       const { thought, ops } = await brain.think({ blocks, changedIds });
-      log(`decision: ${thought} → ${ops.length} op(s)`);
+      log(`${tag} decision: ${thought} → ${ops.length} op(s)`);
       if (ops.length > 0) {
         await executeOps(session, ops);
-        log('done editing.');
+        log(`${tag} done editing.`);
       }
     } catch (err) {
-      log('act failed:', err instanceof Error ? err.message : err);
+      log(`${tag} act failed:`, err instanceof Error ? err.message : err);
     } finally {
       session.clearCursor();
       const after = session.blocks();
@@ -203,7 +195,7 @@ export async function main(): Promise<void> {
       prevBlocks = new Map(after.map(b => [b.id ?? '', b.markdown] as const));
       lastActEnd = Date.now();
       executing = false;
-      if (missed) {
+      if (missed && !destroyed) {
         missed = false;
         schedule();
       }
@@ -211,13 +203,14 @@ export async function main(): Promise<void> {
   };
 
   const schedule = () => {
+    if (destroyed) return;
     if (timer) clearTimeout(timer);
     const wait = Math.max(QUIET_MS, lastActEnd + COOLDOWN_MS - Date.now());
     timer = setTimeout(() => void act(), wait);
   };
 
   session.ydoc.on('update', (_update: Uint8Array, origin: unknown) => {
-    if (!ready) return;
+    if (!ready || destroyed) return;
     // Only remote (human) changes wake the agent; our own edits carry the
     // y-sync binding as origin, remote ones carry the provider.
     if (origin !== session.provider) return;
@@ -229,11 +222,72 @@ export async function main(): Promise<void> {
   });
 
   ready = true;
-  log('watching for human edits… (Ctrl-C to leave the room)');
+  return {
+    destroy() {
+      destroyed = true;
+      if (timer) clearTimeout(timer);
+      session.destroy();
+    },
+  };
+}
+
+export async function main(): Promise<void> {
+  const url =
+    process.env.AGENT_HOCUSPOCUS_URL ||
+    process.env.NEXT_PUBLIC_HOCUSPOCUS_URL ||
+    'ws://localhost:1234';
+  const name = process.env.AGENT_NAME || 'Cogno AI';
+  const color = process.env.AGENT_COLOR || '#10B981';
+  const pinned = process.env.AGENT_NOTE_ID || process.argv[2];
+
+  try {
+    const pong = await pingBrain();
+    log(`brain OK (${brainProvider()} / model=${brainModel()}, reply="${pong}")`);
+  } catch (err) {
+    log(
+      `⚠ brain (${brainProvider()}) unreachable — the agent will join but cannot think:`,
+      err instanceof Error ? err.message : err
+    );
+  }
+
+  const watchers = new Map<string, WatcherHandle>();
+
+  const join = async (noteId: number | string) => {
+    const key = String(noteId);
+    if (watchers.has(key)) return;
+    if (watchers.size >= MAX_SESSIONS) return;
+    try {
+      watchers.set(key, await watchNote(noteId, { url, name, color }));
+    } catch (err) {
+      watchers.delete(key);
+      log(`[note:${noteId}] join failed:`, err instanceof Error ? err.message : err);
+    }
+  };
+
+  if (pinned) {
+    log(`pinned to note:${pinned} (${url})`);
+    await join(pinned);
+  } else {
+    // Follow the sidebar: join the most recent notes, pick up new ones as
+    // they are created.
+    const refresh = async () => {
+      try {
+        const notes = await listNotes(MAX_SESSIONS);
+        for (const n of notes) await join(n.id);
+      } catch (err) {
+        log('notes refresh failed:', err instanceof Error ? err.message : err);
+      }
+    };
+    await refresh();
+    setInterval(() => void refresh(), NOTES_POLL_MS);
+    log(`watching the ${watchers.size} most recent notes (poll ${NOTES_POLL_MS / 1000}s, cap ${MAX_SESSIONS})`);
+  }
+
+  log('Cogno AI is in the room. (Ctrl-C to leave)');
 
   const bye = () => {
-    log('leaving the room.');
-    session.destroy();
+    log('leaving all rooms.');
+    for (const w of watchers.values()) w.destroy();
     process.exit(0);
   };
   process.on('SIGINT', bye);
