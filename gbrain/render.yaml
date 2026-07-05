@@ -1,0 +1,36 @@
+# Render Blueprint for the gbrain company brain (bridge over the gbrain CLI).
+#
+# Deploy: Render → New → Blueprint, pick this file (or create a Docker web
+# service manually with Root Directory = `gbrain`). The Next.js app (Vercel) and
+# hocuspocus (Render) reach it via GBRAIN_BRIDGE_URL=https://<service>.onrender.com
+#
+# Backing store: Supabase Postgres + pgvector (set DATABASE_URL below). On
+# Postgres the PGLite single-writer lock is gone, so concurrent access is fine.
+services:
+  - type: web
+    name: gbrain
+    runtime: docker
+    rootDir: gbrain
+    dockerfilePath: ./Dockerfile
+    plan: starter # needs a paid plan for the persistent disk below
+    healthCheckPath: /health
+    # Keep ~/.gbrain (config.json) so init runs once. The brain data itself lives
+    # in Postgres; this disk only persists local config. Remove if on a free plan
+    # (init re-runs each deploy; apply-migrations keeps the schema intact).
+    disk:
+      name: gbrain-home
+      mountPath: /root/.gbrain
+      sizeGB: 1
+    envVars:
+      # Supabase transaction pooler string (Dashboard → Settings → Database →
+      # Connection string → Transaction pooler). Keep :6543 and ?prepare=false.
+      #   postgresql://postgres.<ref>:<pwd>@aws-0-<region>.pooler.supabase.com:6543/postgres?prepare=false
+      - key: DATABASE_URL
+        sync: false
+      # Embedding + chat key (Gemini AI Studio key; reused for embeddings).
+      - key: GEMINI_API_KEY
+        sync: false
+      # Shared secret the app + hocuspocus send as `Authorization: Bearer`.
+      # Set the SAME value here and in web (Vercel) + hocuspocus (Render).
+      - key: GBRAIN_BRIDGE_TOKEN
+        sync: false

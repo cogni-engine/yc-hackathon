@@ -14,8 +14,12 @@
  *   POST /query { q, mode? }   mode=query|search  -> retrieval, returns { text }
  */
 
+// $PORT is injected by Render; GBRAIN_BRIDGE_PORT/GBRAIN_PORT override locally.
 const PORT = Number(
-  process.env.GBRAIN_BRIDGE_PORT ?? process.env.GBRAIN_PORT ?? 3131
+  process.env.GBRAIN_BRIDGE_PORT ??
+    process.env.PORT ??
+    process.env.GBRAIN_PORT ??
+    3131
 );
 const TOKEN = process.env.GBRAIN_BRIDGE_TOKEN ?? '';
 

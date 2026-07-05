@@ -1,6 +1,10 @@
 #!/bin/sh
-# Initialize the brain on first run (persisted in the mounted ~/.gbrain volume),
-# then serve it over HTTP. Idempotent: re-runs reuse the existing brain.
+# Initialize the brain on first run, then run the bridge over HTTP.
+#
+# Two modes, chosen by whether a Postgres URL is present:
+#   - GBRAIN_DATABASE_URL / DATABASE_URL set  → Postgres (prod, e.g. Supabase).
+#     Shared DB, concurrent access is fine.
+#   - neither set                             → local PGLite (single-writer).
 set -e
 
 : "${GBRAIN_PORT:=3131}"
@@ -11,6 +15,13 @@ GBRAIN_HOME="${HOME:-/root}/.gbrain"
 # embedding provider (model gemini-embedding-001), so map it across.
 if [ -z "$GOOGLE_GENERATIVE_AI_API_KEY" ] && [ -n "$GEMINI_API_KEY" ]; then
   export GOOGLE_GENERATIVE_AI_API_KEY="$GEMINI_API_KEY"
+fi
+
+# gbrain namespaces its connection string as GBRAIN_DATABASE_URL and deliberately
+# ignores a bare DATABASE_URL that came from a cwd .env (its #427 guard). We map
+# DATABASE_URL → GBRAIN_DATABASE_URL so a plain Render/compose env var works.
+if [ -z "$GBRAIN_DATABASE_URL" ] && [ -n "$DATABASE_URL" ]; then
+  export GBRAIN_DATABASE_URL="$DATABASE_URL"
 fi
 
 # Pick the embedding provider explicitly so a non-TTY init never stalls on the
@@ -26,26 +37,40 @@ elif [ -n "$VOYAGE_API_KEY" ]; then
 elif [ -n "$ZEROENTROPY_API_KEY" ]; then
   EMBED_MODEL="zeroentropyai:zerank-2"
 else
-  echo "gbrain: set an embedding key — GEMINI_API_KEY / GOOGLE_GENERATIVE_AI_API_KEY (Gemini), or OPENAI_API_KEY / VOYAGE_API_KEY / ZEROENTROPY_API_KEY — in .env.local." >&2
+  echo "gbrain: set an embedding key — GEMINI_API_KEY / GOOGLE_GENERATIVE_AI_API_KEY (Gemini), or OPENAI_API_KEY / VOYAGE_API_KEY / ZEROENTROPY_API_KEY." >&2
   exit 1
 fi
 
-if [ ! -f "$GBRAIN_HOME/config.json" ]; then
-  echo "gbrain: no brain found — initializing a local PGLite brain ($EMBED_MODEL)..." >&2
-  gbrain init --pglite --embedding-model "$EMBED_MODEL"
+if [ -n "$GBRAIN_DATABASE_URL" ]; then
+  # ---- Postgres mode (prod / Supabase) ----------------------------------
+  # Concurrent access is fine here, so there is no PGLite lock to manage. Keep
+  # ~/.gbrain on a persistent disk (see render.yaml) so config.json survives and
+  # init only runs once; otherwise it re-runs each boot (apply-migrations is
+  # idempotent, so schema stays intact either way).
+  if [ ! -f "$GBRAIN_HOME/config.json" ]; then
+    echo "gbrain: initializing Postgres brain ($EMBED_MODEL)..." >&2
+    gbrain init --non-interactive --embedding-model "$EMBED_MODEL"
+  fi
+  echo "gbrain: applying migrations..." >&2
+  gbrain apply-migrations --yes || true
+else
+  # ---- PGLite mode (local dev) ------------------------------------------
+  if [ ! -f "$GBRAIN_HOME/config.json" ]; then
+    echo "gbrain: initializing local PGLite brain ($EMBED_MODEL)..." >&2
+    gbrain init --pglite --embedding-model "$EMBED_MODEL"
+  fi
+  # PGLite is single-writer and does not release its lock on SIGKILL. We only
+  # ever run one gbrain container, so any lock present at startup was left by a
+  # previous, now-dead process — clearing it avoids "Timed out waiting for
+  # PGLite lock" on restart. (postmaster.pid is the embedded Postgres equivalent.)
+  rm -f "$GBRAIN_HOME"/brain.pglite/.gbrain-lock/lock 2>/dev/null || true
+  rm -f "$GBRAIN_HOME"/brain.pglite/postmaster.pid 2>/dev/null || true
 fi
-
-# PGLite is single-writer and does not release its lock on SIGKILL. We only ever
-# run one gbrain container, so any lock present at container startup was written
-# by a previous, now-dead process — clearing it avoids "Timed out waiting for
-# PGLite lock" on restart. (postmaster.pid is the embedded Postgres equivalent.)
-rm -f "$GBRAIN_HOME"/brain.pglite/.gbrain-lock/lock 2>/dev/null || true
-rm -f "$GBRAIN_HOME"/brain.pglite/postmaster.pid 2>/dev/null || true
 
 # Surface any config/DB/provider problems in the logs, but don't block startup.
 gbrain doctor --fast || true
 
-# Run the bridge, not `gbrain serve --http`: on PGLite only one process may own
-# the brain, and the bridge needs to shell `gbrain put`/`gbrain query`. The
-# bridge binds 0.0.0.0 (Bun default) so the container's published port reaches it.
+# Run the bridge (not `gbrain serve --http`): the bridge shells `gbrain put` /
+# `gbrain query`, and on PGLite only one process may own the brain. It binds
+# 0.0.0.0 and honors $PORT (Render), else GBRAIN_PORT, else 3131.
 exec bun /app/bridge.ts
