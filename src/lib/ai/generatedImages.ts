@@ -7,6 +7,11 @@ const SUPABASE_STORAGE_BUCKET =
 const SUPABASE_STORAGE_PREFIX =
   process.env.SUPABASE_STORAGE_PREFIX || 'ai-images';
 
+const DEFAULT_ASPECT_RATIO = '16:9';
+const DEFAULT_IMAGE_SIZE = '1K';
+const ALLOWED_ASPECT_RATIOS = new Set(['1:1', '16:9', '9:16', '4:3', '3:4']);
+const ALLOWED_IMAGE_SIZES = new Set(['512', '1K', '2K', '4K']);
+
 const MIME_TO_EXTENSION: Record<string, string> = {
   'image/jpeg': 'jpg',
   'image/png': 'png',
@@ -52,6 +57,37 @@ function encodeObjectPath(objectPath: string): string {
     .split('/')
     .map(part => encodeURIComponent(part))
     .join('/');
+}
+
+function normalizeAspectRatio(value: string | undefined): string {
+  const normalized = (value || '').trim().toLowerCase();
+  if (!normalized) return DEFAULT_ASPECT_RATIO;
+  if (normalized === 'square') return '1:1';
+  if (normalized === 'landscape') return '16:9';
+  if (normalized === 'portrait') return '3:4';
+  return ALLOWED_ASPECT_RATIOS.has(normalized)
+    ? normalized
+    : DEFAULT_ASPECT_RATIO;
+}
+
+function normalizeImageSize(value: string | undefined): string {
+  const normalized = (value || '').trim().toLowerCase();
+  const aliases: Record<string, string> = {
+    standard: '1K',
+    medium: '1K',
+    hd: '2K',
+    large: '2K',
+    small: '512',
+    '512': '512',
+    '1k': '1K',
+    '1024': '1K',
+    '2k': '2K',
+    '2048': '2K',
+    '4k': '4K',
+    '4096': '4K',
+  };
+  const mapped = aliases[normalized] ?? value?.trim();
+  return mapped && ALLOWED_IMAGE_SIZES.has(mapped) ? mapped : DEFAULT_IMAGE_SIZE;
 }
 
 function getSupabaseConfig(): {
@@ -159,13 +195,28 @@ Requirements:
 
 function readGeneratedImage(interaction: unknown): GeneratedImageContent | null {
   if (!interaction || typeof interaction !== 'object') return null;
-  const outputImage = (interaction as { output_image?: unknown }).output_image;
+  const typed = interaction as {
+    output_image?: unknown;
+    outputs?: unknown;
+  };
+  const outputImage = typed.output_image;
   if (
     outputImage &&
     typeof outputImage === 'object' &&
     ('data' in outputImage || 'uri' in outputImage)
   ) {
     return outputImage as GeneratedImageContent;
+  }
+
+  if (Array.isArray(typed.outputs)) {
+    const image = typed.outputs.find(
+      output =>
+        output &&
+        typeof output === 'object' &&
+        (output as { type?: unknown }).type === 'image' &&
+        ('data' in output || 'uri' in output)
+    );
+    if (image) return image as GeneratedImageContent;
   }
 
   return null;
@@ -191,12 +242,12 @@ export async function generateAndStoreImage({
   const interaction = await ai.interactions.create({
     model: IMAGE_MODEL,
     input: buildImagePrompt(prompt, context, selection),
+    response_modalities: ['image'],
     response_format: {
       type: 'image',
-      delivery: 'inline',
       mime_type: 'image/jpeg',
-      aspect_ratio: aspectRatio || '16:9',
-      image_size: imageSize || '1K',
+      aspect_ratio: normalizeAspectRatio(aspectRatio),
+      image_size: normalizeImageSize(imageSize),
     },
   });
 

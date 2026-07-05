@@ -146,13 +146,19 @@ const RESPONSE_SCHEMA = {
               'Short alt text for generate_image; null for other actions.',
           },
           aspectRatio: {
-            anyOf: [{ type: 'string' }, { type: 'null' }],
+            anyOf: [
+              { type: 'string', enum: ['1:1', '16:9', '9:16', '4:3', '3:4'] },
+              { type: 'null' },
+            ],
             description:
               'Optional aspect ratio for generate_image: 1:1, 16:9, 9:16, 4:3, or 3:4.',
           },
           imageSize: {
-            anyOf: [{ type: 'string' }, { type: 'null' }],
-            description: 'Optional image size for generate_image: 1K or 2K.',
+            anyOf: [
+              { type: 'string', enum: ['512', '1K', '2K', '4K'] },
+              { type: 'null' },
+            ],
+            description: 'Optional image size for generate_image: 512, 1K, 2K, or 4K.',
           },
         },
         required: [
@@ -192,12 +198,32 @@ const GEMINI_SCHEMA = {
         properties: {
           action: {
             type: Type.STRING,
-            enum: ['append_after', 'replace', 'delete'],
+            enum: ['append_after', 'replace', 'delete', 'generate_image'],
           },
           blockId: { type: Type.STRING, nullable: true },
           markdown: { type: Type.STRING, nullable: true },
+          prompt: { type: Type.STRING, nullable: true },
+          alt: { type: Type.STRING, nullable: true },
+          aspectRatio: {
+            type: Type.STRING,
+            enum: ['1:1', '16:9', '9:16', '4:3', '3:4'],
+            nullable: true,
+          },
+          imageSize: {
+            type: Type.STRING,
+            enum: ['512', '1K', '2K', '4K'],
+            nullable: true,
+          },
         },
-        required: ['action'],
+        required: [
+          'action',
+          'blockId',
+          'markdown',
+          'prompt',
+          'alt',
+          'aspectRatio',
+          'imageSize',
+        ],
       },
     },
   },
@@ -256,6 +282,7 @@ You get the document as blocks (each with a blockId) plus which block the human 
 - They're mid-list → add the obviously-missing next item(s).
 - A very short direct question appeared → answer in one line.
 - You spot a clear typo or a leftover empty fragment ELSEWHERE → fix/delete it.
+- If the human is asking for an image / picture / photo / illustration / 画像 / 写真 / イラスト / 生成, return [] and let the deep brain generate it after the typing burst settles. Never scaffold prompt-detail sections for image requests.
 
 Hard rules:
 - NEVER touch the block the human is actively editing (activeBlockId) — work after/below it or elsewhere.
@@ -357,7 +384,7 @@ function extractJson(text: string): string {
 const CLI_JSON_INSTRUCTION = `
 
 Output format — reply with ONLY a JSON object, no prose, no code fences:
-{"thought": "<one short sentence>", "ops": [{"action": "append_after" | "replace" | "delete", "blockId": "<id or null>", "markdown": "<markdown or null>"}]}`;
+{"thought": "<one short sentence>", "ops": [{"action": "append_after" | "replace" | "delete" | "generate_image", "blockId": "<id or null>", "markdown": "<markdown or null>", "prompt": "<visual prompt or null>", "alt": "<alt text or null>", "aspectRatio": "<ratio or null>", "imageSize": "<size or null>"}]}`;
 
 /** One-shot generation through the local \`claude\` CLI (subscription auth). */
 function runClaudeCli(

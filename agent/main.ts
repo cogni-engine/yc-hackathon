@@ -24,6 +24,9 @@ const DEEP_COOLDOWN_MS = 18000;
 const MAX_SESSIONS = 6; // most-recent notes to join concurrently
 const NOTES_POLL_MS = 15000; // how often to look for new notes
 
+const IMAGE_REQUEST_RE =
+  /(画像|イメージ|写真|イラスト|ビジュアル|描いて|生成して|作って|image|picture|photo|illustration|visual)/i;
+
 function log(...args: unknown[]): void {
   const t = new Date().toISOString().slice(11, 19);
   console.log(`[agent ${t}]`, ...args);
@@ -83,6 +86,22 @@ function positionAfterBlock(session: AgentSession, blockId: string | null): numb
   if (!blockId) return session.docEnd();
   const hit = session.findBlock(blockId);
   return hit ? hit.pos + hit.node.nodeSize : session.docEnd();
+}
+
+function describeOps(ops: AgentOp[]): string {
+  return ops.map(op => op.action).join(', ');
+}
+
+function changedText(blocks: BlockSnapshot[], changedIds: string[]): string {
+  const changed = new Set(changedIds);
+  return blocks
+    .filter(block => block.id && changed.has(block.id))
+    .map(block => block.markdown)
+    .join('\n');
+}
+
+function looksLikeImageRequest(blocks: BlockSnapshot[], changedIds: string[]): boolean {
+  return IMAGE_REQUEST_RE.test(changedText(blocks, changedIds));
 }
 
 /**
@@ -166,7 +185,10 @@ async function executeOps(session: AgentSession, ops: AgentOp[]): Promise<void> 
         }
         case 'generate_image': {
           const prompt = op.prompt?.trim();
-          if (!prompt) break;
+          if (!prompt) {
+            log('op generate_image skipped: missing prompt');
+            break;
+          }
 
           let pos = positionAfterBlock(session, op.blockId);
           if (lastAppend && lastAppend.blockId === op.blockId) {
@@ -186,6 +208,9 @@ async function executeOps(session: AgentSession, ops: AgentOp[]): Promise<void> 
             op.alt || image.alt || prompt || 'Generated image'
           );
           const end = session.insertImageAt(pos, { src: image.src, alt });
+          if (end === pos) {
+            throw new Error('image insert did not change the document');
+          }
           session.broadcastCursor(end);
           lastAppend = { blockId: op.blockId, end };
           break;
@@ -263,9 +288,13 @@ async function watchNote(
       if (hash === lastHash) return;
       // The block they're editing right now = last changed one.
       const activeBlockId = changedIds[changedIds.length - 1] ?? null;
+      if (looksLikeImageRequest(blocks, changedIds)) {
+        log(`${tag} reflex skipped: image request; waiting for deep brain`);
+        return;
+      }
       const { thought, ops } = await quickThink({ blocks, changedIds, activeBlockId });
       if (ops.length > 0) {
-        log(`${tag} reflex: ${thought} → ${ops.length} op(s)`);
+        log(`${tag} reflex: ${thought} → ${ops.length} op(s): ${describeOps(ops)}`);
         session.setTyping(true);
         await executeOps(session, ops);
       }
@@ -298,7 +327,7 @@ async function watchNote(
 
       log(`${tag} thinking… (${blocks.length} blocks, changed: ${changedIds.join(', ') || '-'})`);
       const { thought, ops } = await brain.think({ blocks, changedIds });
-      log(`${tag} decision: ${thought} → ${ops.length} op(s)`);
+      log(`${tag} decision: ${thought} → ${ops.length} op(s): ${describeOps(ops)}`);
       if (ops.length > 0) {
         session.setTyping(true);
         await executeOps(session, ops);
