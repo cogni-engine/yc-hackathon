@@ -25,7 +25,7 @@ const MAX_SESSIONS = 6; // most-recent notes to join concurrently
 const NOTES_POLL_MS = 15000; // how often to look for new notes
 
 const IMAGE_REQUEST_RE =
-  /(画像|イメージ|写真|イラスト|ビジュアル|描いて|生成して|作って|image|picture|photo|illustration|visual)/i;
+  /(画像|イメージ|写真|イラスト|ビジュアル|描いて|生成して|作って|画面案|UI案|UX案|画面デザイン|UIデザイン|ビジュアルデザイン|デザイン案|レイアウト|ワイヤーフレーム|モックアップ|どう見せる|image|picture|photo|illustration|visual|\bui\b|\bux\b|\blayout\b|\bwireframe\b|\bmockup\b|\bprototype\b|\binterface\b|\bdesign\b)/i;
 
 function log(...args: unknown[]): void {
   const t = new Date().toISOString().slice(11, 19);
