@@ -15,5 +15,9 @@ services:
         NEXT_PUBLIC_HOCUSPOCUS_URL: ws://localhost:1235
     ports:
       - "3000:3000"
+    # Server-side runtime env (GEMINI_API_KEY, GEMINI_MODEL) for /api/ai.
+    # NEXT_PUBLIC_* in here is ignored at runtime (already baked at build).
+    env_file:
+      - .env.local
     depends_on:
       - hocuspocus
