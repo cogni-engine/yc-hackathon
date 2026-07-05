@@ -4,6 +4,7 @@ import Link from 'next/link';
 import { usePathname } from 'next/navigation';
 import { FileText, PencilRuler, Plug } from 'lucide-react';
 import { NotesList } from '@/features/notes/NotesList';
+import { integrationTools } from '@/features/integrations/tools';
 
 const tabs = [
   { href: '/notes', label: 'Notes', icon: FileText },
@@ -15,6 +16,31 @@ function isActiveTab(pathname: string, href: string) {
     return pathname === '/' || pathname.startsWith('/notes');
   }
   return pathname === href || pathname.startsWith(`${href}/`);
+}
+
+function SidebarIntegrations() {
+  return (
+    <nav className='border-t border-border-default px-2 py-3'>
+      <div className='space-y-1'>
+        {integrationTools.map(tool => {
+          const Icon = tool.Icon;
+
+          return (
+            <Link
+              key={tool.name}
+              href='/integrations'
+              className='flex min-w-0 items-center gap-2 rounded-md px-2 py-1.5 text-sm text-text-secondary transition-colors hover:bg-interactive-hover hover:text-text-primary'
+            >
+              <span className='inline-flex size-5 shrink-0 items-center justify-center'>
+                <Icon className='size-4' />
+              </span>
+              <span className='min-w-0 truncate'>{tool.name}</span>
+            </Link>
+          );
+        })}
+      </div>
+    </nav>
+  );
 }
 
 export function AppSidebar() {
@@ -53,6 +79,7 @@ export function AppSidebar() {
       <div className='min-h-0 flex-1'>
         <NotesList />
       </div>
+      <SidebarIntegrations />
       <nav className='border-t border-border-default px-2 py-3'>
         <Link
           href='/integrations'
