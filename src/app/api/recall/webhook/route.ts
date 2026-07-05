@@ -28,9 +28,12 @@ const HOCUSPOCUS_URL =
   process.env.NEXT_PUBLIC_HOCUSPOCUS_URL ||
   'ws://localhost:1234';
 
+const log = (...a: unknown[]) => console.log('[recall/webhook]', ...a);
+
 interface Entry {
   ydoc: Y.Doc;
   provider: HocuspocusProvider;
+  socket: HocuspocusProviderWebsocket;
   connected: boolean;
   ready: Promise<void>;
 }
@@ -51,13 +54,19 @@ function connect(noteId: string): Entry {
   let resolveReady!: () => void;
   const ready = new Promise<void>(res => (resolveReady = res));
 
-  const entry: Entry = { ydoc, provider: null as never, connected: true, ready };
   // Node has no global WebSocket in every runtime, so hand the socket layer the
   // `ws` polyfill explicitly (it lives on the websocket provider, not the doc one).
   const socket = new HocuspocusProviderWebsocket({
     url: HOCUSPOCUS_URL,
     WebSocketPolyfill: WebSocket,
   });
+  const entry: Entry = {
+    ydoc,
+    provider: null as never,
+    socket,
+    connected: true,
+    ready,
+  };
   entry.provider = new HocuspocusProvider({
     websocketProvider: socket,
     name,
@@ -81,6 +90,26 @@ function appendParagraph(ydoc: Y.Doc, line: string): void {
   fragment.push([paragraph]);
 }
 
+/**
+ * Wait until the outgoing Y.js update has actually left the socket. In a
+ * serverless function the instance can freeze the moment we return the HTTP
+ * response, dropping any not-yet-flushed WebSocket frame — so block briefly on
+ * the raw socket's bufferedAmount before returning.
+ */
+async function flush(socket: HocuspocusProviderWebsocket): Promise<void> {
+  const raw = (socket as unknown as { webSocket?: { bufferedAmount?: number } })
+    .webSocket;
+  const deadline = Date.now() + 1500;
+  while (Date.now() < deadline) {
+    if (raw && typeof raw.bufferedAmount === 'number' && raw.bufferedAmount === 0) {
+      // Give the TCP layer a beat to actually push the bytes out.
+      await new Promise(r => setTimeout(r, 150));
+      return;
+    }
+    await new Promise(r => setTimeout(r, 50));
+  }
+}
+
 /** Turn a Recall `transcript.data` payload into `Speaker: words...`. */
 function extractLine(payload: any): { noteId: string; line: string } | null {
   if (payload?.event !== 'transcript.data') return null;
@@ -98,24 +127,45 @@ function extractLine(payload: any): { noteId: string; line: string } | null {
   return { noteId: String(noteId), line: speaker ? `${speaker}: ${text}` : text };
 }
 
+/** GET — quick sanity check that the route is deployed and where it writes. */
+export function GET() {
+  return NextResponse.json({
+    ok: true,
+    hocuspocusUrl: HOCUSPOCUS_URL,
+    localhost: HOCUSPOCUS_URL.includes('localhost'),
+  });
+}
+
 export async function POST(req: Request) {
-  let payload: unknown;
+  let payload: any;
   try {
     payload = await req.json();
-  } catch {
+  } catch (e) {
+    log('bad json', (e as Error).message);
     return NextResponse.json({ ok: true });
   }
 
+  // Log the raw event so the exact shape is visible in Vercel logs on the first
+  // real delivery (this is where a field-path mismatch shows up).
+  log('event=', payload?.event, 'raw=', JSON.stringify(payload).slice(0, 1200));
+
   const parsed = extractLine(payload);
-  if (!parsed) return NextResponse.json({ ok: true });
+  if (!parsed) {
+    log('no line extracted (event/shape/metadata mismatch or empty words)');
+    return NextResponse.json({ ok: true });
+  }
+  log('extracted', parsed, 'hocuspocus=', HOCUSPOCUS_URL);
 
   const entry = connect(parsed.noteId);
-  // Don't hang the webhook if hocuspocus is unreachable.
-  await Promise.race([
-    entry.ready,
-    new Promise(res => setTimeout(res, 5000)),
+  const synced = await Promise.race([
+    entry.ready.then(() => true),
+    new Promise<boolean>(res => setTimeout(() => res(false), 8000)),
   ]);
+  log('synced=', synced, 'connected=', entry.connected);
+
   appendParagraph(entry.ydoc, parsed.line);
+  await flush(entry.socket);
+  log('appended + flushed');
 
   return NextResponse.json({ ok: true });
 }
