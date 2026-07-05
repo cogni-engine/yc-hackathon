@@ -14,7 +14,7 @@ const geistMono = Geist_Mono({
 });
 
 export const metadata: Metadata = {
-  title: "Realtime Canvas",
+  title: "Pillow",
   description: "Collaborative realtime canvas",
 };
 

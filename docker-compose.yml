@@ -1,0 +1,19 @@
+# Local one-shot stack: realtime server + Next.js app.
+#   docker compose up --build
+# Then open http://localhost:3000 (open two tabs to collaborate).
+services:
+  hocuspocus:
+    build: ./hocuspocus
+    ports:
+      - "1235:1234" # host 1235 → container 1234 (avoids cogno's local 1234)
+
+  web:
+    build:
+      context: .
+      args:
+        # Baked into the client bundle; the browser dials this from the host.
+        NEXT_PUBLIC_HOCUSPOCUS_URL: ws://localhost:1235
+    ports:
+      - "3000:3000"
+    depends_on:
+      - hocuspocus

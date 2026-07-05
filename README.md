@@ -1,4 +1,4 @@
-# Realtime Canvas
+# Pillow
 
 Cogno's collaborative editor (canvas) extracted into a standalone Next.js app.
 Multiple people edit one shared document live — TipTap + Y.js synced through a
