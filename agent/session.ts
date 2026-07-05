@@ -222,7 +222,7 @@ export class AgentSession {
   // ------------------------------------------------------ humanized editing
 
   /** Move the visible caret and let it settle — "reading before writing". */
-  async moveCursorTo(pos: number, settleMs = 400): Promise<void> {
+  async moveCursorTo(pos: number, settleMs = 260): Promise<void> {
     const clamped = Math.max(0, Math.min(pos, this.docEnd()));
     const state = this.editor.state;
     // `near` resolves block boundaries (e.g. right after a code block) to the
@@ -243,7 +243,7 @@ export class AgentSession {
     let lastAbs = startPos;
     let i = 0;
     while (i < text.length) {
-      const chunkLen = Math.min(1 + Math.floor(Math.random() * 3), text.length - i);
+      const chunkLen = Math.min(2 + Math.floor(Math.random() * 3), text.length - i);
       const chunk = text.slice(i, i + chunkLen);
       i += chunkLen;
 
@@ -257,7 +257,7 @@ export class AgentSession {
       lastAbs = abs + chunk.length;
       rel = this.absToRel(lastAbs);
       this.broadcastCursor(lastAbs);
-      await sleep(jitter(24, 46));
+      await sleep(jitter(14, 24));
     }
     return lastAbs;
   }
@@ -284,6 +284,207 @@ export class AgentSession {
     const ok = this.editor.commands.insertContentAt(pos, content);
     if (!ok) return pos;
     return pos + (this.editor.state.doc.content.size - before);
+  }
+
+  /** End position of the last text character inside a block, or null. */
+  private lastTextEnd(blockId: string): number | null {
+    const hit = this.findBlock(blockId);
+    if (!hit) return null;
+    let end: number | null = null;
+    hit.node.descendants((child, childPos) => {
+      if (child.isText && child.text) {
+        // childPos is relative to the block's content start (pos + 1).
+        end = hit.pos + 1 + childPos + child.text.length;
+      }
+      return true;
+    });
+    return end;
+  }
+
+  /**
+   * Delete a block the way a human holding Backspace does: caret at the end,
+   * characters vanish one by one (accelerating like key-repeat), then the
+   * empty shell goes. Blocks without text (images, embeds) get a brief
+   * highlight instead — there is nothing to backspace through.
+   */
+  async deleteBlockBackwards(blockId: string): Promise<void> {
+    const first = this.findBlock(blockId);
+    if (!first) return;
+
+    if (!first.node.textContent) {
+      await this.selectAndDelete(first.pos, first.pos + first.node.nodeSize, 450);
+      return;
+    }
+
+    const totalChars = first.node.textContent.length;
+    let delay = 90; // key-repeat: slow first strokes, then accelerate
+    let deleted = 0;
+
+    for (;;) {
+      const hit = this.findBlock(blockId);
+      if (!hit) return; // block vanished (e.g. concurrent human edit)
+      if (!hit.node.textContent.length) break;
+
+      const end = this.lastTextEnd(blockId);
+      if (end == null) break;
+
+      // Big blocks: after ~80 single chars switch to word-sized bites so the
+      // whole deletion stays a few seconds, not half a minute.
+      const bite =
+        deleted > 80 || totalChars > 400
+          ? Math.min(6, hit.node.textContent.length)
+          : 1;
+      const tr = this.editor.state.tr.delete(end - bite, end);
+      tr.setSelection(TextSelection.create(tr.doc, end - bite));
+      this.editor.view.dispatch(tr);
+      deleted += bite;
+      this.broadcastCursor(end - bite);
+
+      await sleep(delay);
+      delay = Math.max(14, delay - 9);
+    }
+
+    // Remove the now-empty shell (paragraph, list skeleton, …).
+    const shell = this.findBlock(blockId);
+    if (shell) {
+      this.editor.commands.deleteRange({
+        from: shell.pos,
+        to: shell.pos + shell.node.nodeSize,
+      });
+      this.broadcastCursor(Math.min(shell.pos, this.docEnd()));
+    }
+  }
+
+  /**
+   * Build a ```mermaid block line by line, so watchers see the diagram grow
+   * node-by-node (each complete line keeps the mermaid source valid, so the
+   * live preview re-renders progressively).
+   */
+  async insertMermaidProgressive(pos: number, fence: string): Promise<number> {
+    const lines = fence.trim().split('\n');
+    const body =
+      lines[0]?.startsWith('```') && lines[lines.length - 1]?.startsWith('```')
+        ? lines.slice(1, -1)
+        : lines;
+    if (!body.length) return pos;
+
+    const shellEnd = this.insertNodeAt(pos, {
+      type: 'codeBlock',
+      attrs: { language: 'mermaid' },
+    });
+    if (shellEnd === pos) return pos;
+
+    let cur = pos + 1; // inside the code block
+    let rel = this.absToRel(cur);
+    for (let i = 0; i < body.length; i++) {
+      const abs = rel ? this.relToAbs(rel) : cur;
+      if (abs == null) break;
+      const text = (i > 0 ? '\n' : '') + body[i];
+      const tr = this.editor.state.tr.insertText(text, abs);
+      tr.setSelection(TextSelection.create(tr.doc, abs + text.length));
+      this.editor.view.dispatch(tr);
+      cur = abs + text.length;
+      rel = this.absToRel(cur);
+      this.broadcastCursor(cur);
+      await sleep(jitter(320, 260));
+    }
+    return cur + 1; // past the code block's closing token
+  }
+
+  /**
+   * Edit an existing mermaid block by LINE DIFF: unchanged lines stay, removed
+   * lines vanish one by one (bottom-up), new lines are typed in (top-down) —
+   * the "AI erases part of the diagram and redraws it" experience.
+   */
+  async editMermaidBlock(blockId: string, newFence: string): Promise<boolean> {
+    const hit = this.findBlock(blockId);
+    if (
+      !hit ||
+      hit.node.type.name !== 'codeBlock' ||
+      hit.node.attrs?.language !== 'mermaid'
+    ) {
+      return false;
+    }
+
+    const fenceLines = newFence.trim().split('\n');
+    const newBody =
+      fenceLines[0]?.startsWith('```') &&
+      fenceLines[fenceLines.length - 1]?.startsWith('```')
+        ? fenceLines.slice(1, -1)
+        : fenceLines;
+    const oldBody = hit.node.textContent.split('\n');
+
+    // Line-wise common prefix / suffix.
+    let p = 0;
+    while (p < oldBody.length && p < newBody.length && oldBody[p] === newBody[p]) p++;
+    let s = 0;
+    while (
+      s < oldBody.length - p &&
+      s < newBody.length - p &&
+      oldBody[oldBody.length - 1 - s] === newBody[newBody.length - 1 - s]
+    ) {
+      s++;
+    }
+    const removed = oldBody.length - p - s;
+    const added = newBody.slice(p, newBody.length - s);
+
+    /** Absolute [from,to] of line k inside the (re-resolved) block. */
+    const lineRange = (k: number): { from: number; to: number } | null => {
+      const cur = this.findBlock(blockId);
+      if (!cur) return null;
+      const linesNow = cur.node.textContent.split('\n');
+      if (k >= linesNow.length) return null;
+      let off = 0;
+      for (let i = 0; i < k; i++) off += linesNow[i].length + 1;
+      const from = cur.pos + 1 + off;
+      const to = from + linesNow[k].length;
+      return { from, to };
+    };
+
+    // Remove old lines bottom-up, one line per beat (diagram shrinks visibly).
+    for (let i = removed - 1; i >= 0; i--) {
+      const range = lineRange(p + i);
+      if (!range) break;
+      // Also consume the separating newline (before the line, or after when
+      // it is the first line).
+      const cur = this.findBlock(blockId)!;
+      const hasPrev = p + i > 0;
+      const from = hasPrev ? range.from - 1 : range.from;
+      const to = !hasPrev && cur.node.textContent.split('\n').length > 1 ? range.to + 1 : range.to;
+      const tr = this.editor.state.tr.delete(from, to);
+      tr.setSelection(TextSelection.create(tr.doc, Math.max(from, cur.pos + 1)));
+      this.editor.view.dispatch(tr);
+      this.broadcastCursor(from);
+      await sleep(jitter(360, 240));
+    }
+
+    // Type new lines top-down.
+    for (let i = 0; i < added.length; i++) {
+      const cur = this.findBlock(blockId);
+      if (!cur) break;
+      const linesNow = cur.node.textContent.split('\n');
+      const insertLineIdx = p + i;
+      let off = 0;
+      for (let k = 0; k < Math.min(insertLineIdx, linesNow.length); k++) {
+        off += linesNow[k].length + 1;
+      }
+      const blockEmpty = cur.node.textContent.length === 0;
+      const atEnd = insertLineIdx >= linesNow.length;
+      const base = cur.pos + 1 + Math.min(off, cur.node.content.size);
+      const text = blockEmpty
+        ? added[i]
+        : atEnd
+          ? '\n' + added[i]
+          : added[i] + '\n';
+      const insertAt = atEnd ? cur.pos + 1 + cur.node.content.size : base;
+      const tr = this.editor.state.tr.insertText(text, insertAt);
+      tr.setSelection(TextSelection.create(tr.doc, insertAt + text.length));
+      this.editor.view.dispatch(tr);
+      this.broadcastCursor(insertAt + text.length);
+      await sleep(jitter(320, 260));
+    }
+
+    return true;
   }
 
   /**
