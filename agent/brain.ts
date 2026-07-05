@@ -510,15 +510,38 @@ Respond with your decision as JSON.`;
  * The reflex brain: a single stateless, small-model call fired while the
  * human is still typing. Returns at most 2 tiny ops.
  */
+/**
+ * Compact context for the reflex: full detail in a window around the active
+ * block, one-line gists elsewhere — keeps the small model FAST while still
+ * letting it target any block in the doc.
+ */
+function renderBlocksWindow(
+  blocks: BlockSnapshot[],
+  activeBlockId: string | null
+): string {
+  if (!blocks.length) return '(document is empty)';
+  let center = blocks.findIndex(b => b.id === activeBlockId);
+  if (center < 0) center = blocks.length - 1;
+  const lo = Math.max(0, center - 4);
+  const hi = Math.min(blocks.length, center + 5);
+  return blocks
+    .map((b, i) =>
+      i >= lo && i < hi
+        ? `[${i}] id=${b.id ?? 'null'} type=${b.type}\n${(b.markdown || '(empty)').slice(0, 300)}`
+        : `[${i}] id=${b.id ?? 'null'} (${b.type}) ${b.markdown.slice(0, 60).replace(/\n/g, ' ')}`
+    )
+    .join('\n---\n');
+}
+
 export async function quickThink(input: {
   blocks: BlockSnapshot[];
   changedIds: string[];
   activeBlockId: string | null;
   ownBlockIds?: string[];
 }): Promise<BrainResult> {
-  const userTurn = `Document blocks (top to bottom):
+  const userTurn = `Document blocks (top to bottom; blocks near the human's activity are shown in full, others as one-line gists):
 
-${renderBlocks(input.blocks)}
+${renderBlocksWindow(input.blocks, input.activeBlockId)}
 
 The human is ACTIVELY TYPING right now. activeBlockId (do not touch): ${
     input.activeBlockId ?? '(unknown)'

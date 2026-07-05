@@ -16,8 +16,8 @@ import { listNotes } from './notes';
 //        they write, revising even its own earlier output. Disengages after
 //        a couple of idle rounds.
 // deep = the thinker — fires after the burst settles, full-document quality.
-const FAST_DELAY_MS = 600;
-const FAST_LOOP_GAP_MS = 500; // pause between engaged-loop rounds
+const FAST_DELAY_MS = 350;
+const FAST_LOOP_GAP_MS = 400; // pause between engaged-loop rounds
 const FAST_IDLE_ROUNDS = 2; // consecutive no-op rounds before disengaging
 const DEEP_QUIET_MS = 6000;
 const DEEP_COOLDOWN_MS = 18000;
@@ -265,6 +265,17 @@ async function watchNote(
         loopBaseline = new Map(blocks.map(b => [b.id ?? '', b.markdown] as const));
         const activeBlockId = changedIds[changedIds.length - 1] ?? null;
 
+        // Visible reaction FIRST — glide the caret next to where the human is
+        // working before any model call, so Cogno always "looks" immediately.
+        if (activeBlockId) {
+          const hit = session.findBlock(activeBlockId);
+          if (hit) {
+            session.broadcastCursor(
+              Math.min(hit.pos + hit.node.nodeSize, session.docEnd())
+            );
+          }
+        }
+
         const { thought, ops: rawOps } = await quickThink({
           blocks,
           changedIds,
@@ -367,10 +378,11 @@ async function watchNote(
   // → the diagram), glide the caret there before any model call returns.
   // Pure heuristics — this is what makes Cogno feel like it's already moving.
   let lastAnticipate = 0;
+  let lastAnticipateTarget = '';
   const anticipate = () => {
     if (busy || destroyed) return;
     const now = Date.now();
-    if (now - lastAnticipate < 1200) return;
+    if (now - lastAnticipate < 300) return; // sub-second reaction, throttled
     lastAnticipate = now;
     try {
       const blocks = session.blocks();
@@ -379,20 +391,32 @@ async function watchNote(
         .map(b => b.markdown)
         .join('\n');
       if (!fresh) return;
-      if (/図|ダイアグラム|チャート|フロー|diagram|mermaid|flow/i.test(fresh)) {
+      if (/図|ダイアグラム|チャート|フロー|グラフ|diagram|mermaid|flow|chart/i.test(fresh)) {
         const target = blocks.find(b => b.markdown.startsWith('```mermaid'));
         if (target?.id) {
           const hit = session.findBlock(target.id);
-          if (hit) session.broadcastCursor(hit.pos + 1);
+          if (hit) {
+            session.broadcastCursor(hit.pos + 1);
+            if (lastAnticipateTarget !== target.id) {
+              lastAnticipateTarget = target.id;
+              log(`${tag} anticipation: caret → diagram (${target.id})`);
+            }
+          }
           return;
         }
       }
-      if (/英語|日本語|translate|訳し|翻訳/i.test(fresh)) {
+      if (/英語|日本語|english|translate|訳し|翻訳/i.test(fresh)) {
         // Orient toward the top — translation sweeps start there.
         const first = blocks.find(b => b.markdown && !b.markdown.startsWith('```'));
         if (first?.id) {
           const hit = session.findBlock(first.id);
-          if (hit) session.broadcastCursor(hit.pos + 1);
+          if (hit) {
+            session.broadcastCursor(hit.pos + 1);
+            if (lastAnticipateTarget !== first.id) {
+              lastAnticipateTarget = first.id;
+              log(`${tag} anticipation: caret → top (translate)`);
+            }
+          }
         }
       }
     } catch {
