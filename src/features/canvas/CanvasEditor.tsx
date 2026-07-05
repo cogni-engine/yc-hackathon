@@ -1,6 +1,6 @@
 'use client';
 
-import { useMemo, useState } from 'react';
+import { useMemo } from 'react';
 import { EditorContent } from '@tiptap/react';
 import {
   useCollaborativeEditor,
@@ -29,7 +29,7 @@ interface CanvasEditorProps {
 export function CanvasEditor({
   room,
   userName,
-  placeholder = 'Type "/" for blocks, or just start writing…',
+  placeholder = 'Type something…',
 }: CanvasEditorProps) {
   // A stable random identity per browser session (no auth).
   const userInfo = useMemo(() => {
@@ -47,39 +47,17 @@ export function CanvasEditor({
 
   const extensionOptions = useMemo(() => ({ placeholder }), [placeholder]);
 
-  const { editor, isSynced, connectionStatus } = useCollaborativeEditor({
+  const { editor } = useCollaborativeEditor({
     room,
     user: userInfo,
     extensions: extensionOptions,
     proseSizeClassName: 'prose-base',
   });
 
-  const [showStatus] = useState(true);
-
   return (
     <div className='relative min-h-full w-full'>
       <EditorStyles />
       <CollaborativeEditorStyles />
-      {showStatus && (
-        <div className='pointer-events-none absolute right-3 top-3 z-20 flex items-center gap-1.5 rounded-full bg-black/5 px-2.5 py-1 text-xs text-neutral-500 dark:bg-white/10 dark:text-neutral-400'>
-          <span
-            className={`inline-block size-2 rounded-full ${
-              connectionStatus === 'connected'
-                ? 'bg-green-500'
-                : connectionStatus === 'connecting'
-                  ? 'bg-amber-500'
-                  : 'bg-neutral-400'
-            }`}
-          />
-          {connectionStatus === 'connected'
-            ? isSynced
-              ? 'Live'
-              : 'Syncing…'
-            : connectionStatus === 'connecting'
-              ? 'Connecting…'
-              : 'Offline'}
-        </div>
-      )}
       {editor ? (
         <>
           <EditorContent editor={editor} className='canvas-editor' />

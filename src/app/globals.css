@@ -3,6 +3,20 @@
 :root {
   --background: #ffffff;
   --foreground: #171717;
+
+  /* cogno design tokens (light) */
+  --surface-primary: #ffffff;
+  --surface-secondary: #eeeeee;
+  --popover: #ffffff;
+  --interactive-hover: rgba(0, 0, 0, 0.05);
+  --interactive-active: rgba(0, 0, 0, 0.09);
+  --border-default: #e5e5e5;
+  --border-strong: #d4d4d4;
+  --dropdown-border: #e5e5e5;
+  --text-primary: #171717;
+  --text-secondary: #525252;
+  --text-muted: #a3a3a3;
+  --input-placeholder: #9ca3af;
 }
 
 @theme inline {
@@ -10,12 +24,37 @@
   --color-foreground: var(--foreground);
   --font-sans: var(--font-geist-sans);
   --font-mono: var(--font-geist-mono);
+
+  --color-surface-primary: var(--surface-primary);
+  --color-surface-secondary: var(--surface-secondary);
+  --color-popover: var(--popover);
+  --color-interactive-hover: var(--interactive-hover);
+  --color-interactive-active: var(--interactive-active);
+  --color-border-default: var(--border-default);
+  --color-border-strong: var(--border-strong);
+  --color-dropdown-border: var(--dropdown-border);
+  --color-text-primary: var(--text-primary);
+  --color-text-secondary: var(--text-secondary);
+  --color-text-muted: var(--text-muted);
 }
 
 @media (prefers-color-scheme: dark) {
   :root {
     --background: #0a0a0a;
     --foreground: #ededed;
+
+    --surface-primary: #1a1a1a;
+    --surface-secondary: #2d2d2d;
+    --popover: #171717;
+    --interactive-hover: rgba(255, 255, 255, 0.07);
+    --interactive-active: rgba(255, 255, 255, 0.12);
+    --border-default: #2e2e2e;
+    --border-strong: #454545;
+    --dropdown-border: #333333;
+    --text-primary: #ededed;
+    --text-secondary: #a3a3a3;
+    --text-muted: #6b6b6b;
+    --input-placeholder: #6b7280;
   }
 }
 
