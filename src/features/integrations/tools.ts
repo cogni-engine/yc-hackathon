@@ -1,3 +1,4 @@
+import type { ElementType } from 'react';
 import {
   Calendar,
   FileText,
@@ -5,23 +6,22 @@ import {
   Github,
   Kanban,
   MessageSquare,
-  Slack,
   Users,
   Video,
-  type LucideIcon,
 } from 'lucide-react';
+import { SlackLogo } from '@/components/SlackLogo';
 
 export type IntegrationTool = {
   name: string;
   description: string;
-  Icon: LucideIcon;
+  Icon: ElementType<{ className?: string }>;
 };
 
 export const integrationTools: IntegrationTool[] = [
   {
     name: 'Slack',
     description: 'Workspace messages',
-    Icon: Slack,
+    Icon: SlackLogo,
   },
   {
     name: 'Jira',

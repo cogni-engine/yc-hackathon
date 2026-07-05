@@ -1,6 +1,7 @@
 import { Server } from '@hocuspocus/server';
 import { Database } from '@hocuspocus/extension-database';
 import { createClient } from '@supabase/supabase-js';
+import { startRecallWebhook } from './recallWebhook.js';
 
 /**
  * Realtime collaboration server for Pillow notes.
@@ -82,3 +83,6 @@ const server = Server.configure({
 server.listen().then(() => {
   console.log(`pillow-hocuspocus listening on :${port}`);
 });
+
+// Recall.ai real-time transcript ingest (own port; leaves the WS server as-is).
+startRecallWebhook(server, port);

@@ -13,6 +13,8 @@ import { ImageControls } from '@/components/tiptap/ImageControls';
 import { EditorStyles } from '@/features/notes/lib/editorStyles';
 import { CollaborativeEditorStyles } from '@/features/notes/lib/collaborativeEditorStyles';
 import { getDisplayName } from '@/features/user/identity';
+import { VoiceEditButton } from './VoiceEditButton';
+import { MeetBar } from './MeetBar';
 
 interface CanvasEditorProps {
   /** Note id — the Hocuspocus document is `note:{noteId}`. */
@@ -157,12 +159,29 @@ export function CanvasEditor({
 
   const extensionOptions = useMemo(() => ({ placeholder }), [placeholder]);
 
-  const { editor } = useCollaborativeEditor({
+  const { editor, isSynced, connectionStatus } = useCollaborativeEditor({
     noteId,
     user: userInfo,
     extensions: extensionOptions,
     proseSizeClassName: 'prose-base',
   });
+  const isEditorReady = editor && isSynced;
+  const loadingLabel =
+    connectionStatus === 'disconnected' ? 'Reconnecting note…' : 'Loading note…';
+
+  // Floating meeting panel — opened by the `/meeting` slash command, which
+  // dispatches `pillow:open-meeting` with the cursor coordinates to anchor it.
+  const [meetingAt, setMeetingAt] = useState<{ top: number; left: number } | null>(
+    null
+  );
+  useEffect(() => {
+    function open(e: Event) {
+      const detail = (e as CustomEvent<{ top: number; left: number }>).detail;
+      setMeetingAt(detail);
+    }
+    window.addEventListener('pillow:open-meeting', open);
+    return () => window.removeEventListener('pillow:open-meeting', open);
+  }, []);
 
   return (
     <div className='relative min-h-full w-full'>
@@ -170,13 +189,35 @@ export function CanvasEditor({
       <CollaborativeEditorStyles />
       {editor ? (
         <>
-          <EditorContent editor={editor} className='canvas-editor' />
-          <TableControls editor={editor} />
-          <ImageControls editor={editor} />
-          <SelectionSummarize editor={editor} />
+          <EditorContent
+            editor={editor}
+            className={`canvas-editor transition-opacity ${
+              isEditorReady ? 'opacity-100' : 'pointer-events-none opacity-0'
+            }`}
+          />
+          {!isEditorReady && (
+            <div className='absolute left-0 top-0 text-sm text-text-muted'>
+              {loadingLabel}
+            </div>
+          )}
+          {isEditorReady && (
+            <>
+              <TableControls editor={editor} />
+              <ImageControls editor={editor} />
+              <SelectionSummarize editor={editor} />
+              <VoiceEditButton editor={editor} />
+              {meetingAt && (
+                <MeetBar
+                  noteId={noteId}
+                  position={meetingAt}
+                  onClose={() => setMeetingAt(null)}
+                />
+              )}
+            </>
+          )}
         </>
       ) : (
-        <div className='text-sm text-neutral-400'>{placeholder}</div>
+        <div className='text-sm text-text-muted'>Loading note…</div>
       )}
     </div>
   );

@@ -20,6 +20,7 @@ import {
   Minus,
   Columns2,
   Columns3,
+  Mic,
 } from 'lucide-react';
 import {
   Heading1Glyph,
@@ -57,6 +58,7 @@ export const SLASH_GROUP_OF: Record<string, string> = {
   '2 columns': 'blocks',
   '3 columns': 'blocks',
   Divider: 'blocks',
+  'Meeting transcript': 'insert',
 };
 
 const SLASH_ITEMS: SlashCommandItem[] = [
@@ -237,6 +239,33 @@ const SLASH_ITEMS: SlashCommandItem[] = [
     keywords: ['hr', 'divider', 'rule', 'line', 'separator'],
     command: ({ editor, range }) =>
       editor.chain().focus().deleteRange(range).setHorizontalRule().run(),
+  },
+  {
+    title: 'Meeting transcript',
+    description: 'Stream a Google Meet / Zoom transcript into this note',
+    icon: Mic,
+    keywords: [
+      'meeting',
+      'meet',
+      'transcript',
+      'zoom',
+      'teams',
+      'recall',
+      'call',
+      '会議',
+      '文字起こし',
+    ],
+    command: ({ editor, range }) => {
+      // No document node is inserted — just open the floating meeting panel,
+      // anchored where the slash was typed. CanvasEditor listens for this.
+      editor.chain().focus().deleteRange(range).run();
+      const coords = editor.view.coordsAtPos(editor.state.selection.from);
+      window.dispatchEvent(
+        new CustomEvent('pillow:open-meeting', {
+          detail: { top: coords.bottom + 4, left: coords.left },
+        })
+      );
+    },
   },
 ];
 
