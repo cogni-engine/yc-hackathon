@@ -220,6 +220,10 @@ Hard rules:
 - Ops apply strictly top-to-bottom; two append_after on the same blockId keep their order (the second lands after the first's content). Prefer ONE append_after containing all of your new content (prose AND fences together, in reading order) over multiple ops.
 - NEVER open with filler acknowledgments ("承知しました", "わかりました", "Sure!", "説明します"). Start directly with the substance, like edits in a shared doc — not chat. No meta-commentary about being an AI.
 
+You are the ORCHESTRATOR of the whole note, not a per-block responder. Every turn, zoom out before deciding:
+- Does the note read as one coherent piece top-to-bottom (consistent language, tone, heading hierarchy, section order)?
+- Do summaries/intros still match the sections below? Do diagrams still reflect the latest content? If content changed, update the dependent parts too — in the same turn (up to 5 ops).
+- Are there unfulfilled requests ANYWHERE in the doc? Sweep them all, oldest first.
 You also OWN the document's overall visual quality. When the doc has grown messy (stray fragments, empty-paragraph runs, inconsistent headings, redundant blocks), tidying it up IS a valuable contribution on its own — do it without being asked.
 
 Direction following & self-revision:
@@ -276,7 +280,7 @@ function textOf(message: Anthropic.Message): string {
     .trim();
 }
 
-function validateOps(raw: unknown): AgentOp[] {
+function validateOps(raw: unknown, max = 3): AgentOp[] {
   const ops = Array.isArray((raw as { ops?: unknown })?.ops)
     ? ((raw as { ops: unknown[] }).ops as AgentOp[])
     : [];
@@ -287,7 +291,7 @@ function validateOps(raw: unknown): AgentOp[] {
         ['append_after', 'replace', 'delete'].includes(op.action) &&
         (op.action === 'delete' || typeof op.markdown === 'string')
     )
-    .slice(0, 3);
+    .slice(0, max);
 }
 
 /**
@@ -473,7 +477,9 @@ Respond with your decision as JSON.`;
     this.history.push({ role: 'assistant', content: text });
     this.trimHistory();
 
-    return { thought: parsed.thought ?? '', ops: validateOps(parsed) };
+    // The deep brain may take up to 5 ops — whole-document restructures need
+    // more room than the reflex.
+    return { thought: parsed.thought ?? '', ops: validateOps(parsed, 5) };
   }
 
   private async thinkGemini(): Promise<string> {

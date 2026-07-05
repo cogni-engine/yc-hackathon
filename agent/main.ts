@@ -20,8 +20,8 @@ import { listNotes } from './notes';
 const FAST_DELAY_MS = 350;
 const FAST_LOOP_GAP_MS = 400; // pause between engaged-loop rounds
 const FAST_IDLE_ROUNDS = 2; // consecutive no-op rounds before disengaging
-const DEEP_QUIET_MS = 3500;
-const DEEP_COOLDOWN_MS = 9000;
+const DEEP_QUIET_MS = 2500;
+const DEEP_COOLDOWN_MS = 8000;
 const MAX_SESSIONS = Number(process.env.AGENT_MAX_SESSIONS) || 6; // concurrent notes
 const NOTES_POLL_MS = 15000; // how often to look for new notes
 
