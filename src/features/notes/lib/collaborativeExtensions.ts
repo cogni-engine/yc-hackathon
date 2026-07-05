@@ -13,6 +13,7 @@ import { Plugin } from '@tiptap/pm/state';
 import { HocuspocusProvider } from '@hocuspocus/provider';
 import * as Y from 'yjs';
 import { BlockIdExtension } from '@/lib/tiptap/BlockIdExtension';
+import { AiCursorExtension } from './AiCursorExtension';
 import { MermaidCodeBlock } from '@/features/tasks/components/MermaidCodeBlock';
 import { ExcalidrawBlock } from '@/features/tasks/components/ExcalidrawBlock';
 import { IframeEmbedBlock } from '@/features/tasks/components/IframeEmbedBlock';
@@ -218,6 +219,10 @@ export function createCollaborativeExtensions({
           }),
         ]
       : []),
+
+    // Shared AI cursor. AI routines can drive it with showAiCursor/moveAiCursor
+    // while actual edits continue to sync through Y.js.
+    AiCursorExtension.configure({ ydoc }),
 
     // Mermaid-rendering code block (replaces StarterKit's codeBlock).
     MermaidCodeBlock,

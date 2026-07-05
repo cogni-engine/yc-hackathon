@@ -20,7 +20,8 @@ const jitter = (base: number, spread: number) =>
 
 export interface SessionOptions {
   url: string;
-  room: string;
+  /** Full Hocuspocus document name, e.g. `note:12` or `canvas:main`. */
+  docName: string;
   /** Presence identity — what humans see on the caret label. */
   name: string;
   color: string;
@@ -69,7 +70,7 @@ export class AgentSession {
 
     this.provider = new HocuspocusProvider({
       websocketProvider,
-      name: `canvas:${this.opts.room}`,
+      name: this.opts.docName,
       document: this.ydoc,
       forceSyncInterval: 3000,
       onSynced: () => resolveSynced(),

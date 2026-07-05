@@ -1,7 +1,31 @@
+import { spawn } from 'node:child_process';
 import Anthropic from '@anthropic-ai/sdk';
 import type { BlockSnapshot } from './session';
 
-const MODEL = process.env.AGENT_MODEL || 'claude-opus-4-8';
+/**
+ * Cogno's thinking brain, powered by Claude, in one of two modes:
+ *
+ *   api — ANTHROPIC_API_KEY is set → Anthropic SDK with structured outputs,
+ *         adaptive thinking, and prompt caching. Model: AGENT_MODEL
+ *         (default claude-opus-4-8).
+ *   cli — no API key → the local `claude` CLI in headless print mode, which
+ *         uses the developer's Claude subscription. Model: AGENT_MODEL
+ *         (default "sonnet" = latest Sonnet). Ideal for local testing.
+ *
+ * Both modes share the same conversation memory: every decision becomes part
+ * of the history the brain sees next time, so it builds on its own past
+ * contributions instead of re-reacting from scratch.
+ */
+export function brainMode(): 'api' | 'cli' {
+  return process.env.ANTHROPIC_API_KEY ? 'api' : 'cli';
+}
+
+export function brainModel(): string {
+  return (
+    process.env.AGENT_MODEL ||
+    (brainMode() === 'api' ? 'claude-opus-4-8' : 'sonnet')
+  );
+}
 
 export type AgentAction = 'append_after' | 'replace' | 'delete';
 
@@ -69,13 +93,17 @@ Operations:
 - replace — replace block blockId entirely with new markdown
 - delete — remove block blockId
 
+Behavior — you are an ACTIVE collaborator (this is a live demo; lean toward acting):
+- If a human addresses you in the recent changes (your name, "Cogno", "AI(さん)", or any question / request / 依頼) you MUST respond with at least one op. Even if you answered something similar before, answer again — better, or adapted to what they just wrote. Never leave a direct address unanswered.
+- When humans add substantive new content, contribute: continue lists/outlines/sections they started, answer implicit questions, add a Mermaid diagram when a flow/structure/relationship is described, tidy or restructure when asked.
+- Scan the whole doc for still-unfulfilled requests (削除して, まとめて, 図にして, …) and fulfill them — even older ones.
+- Return ops: [] ONLY when the newest change is clearly a mid-typing fragment with no request in it, or when literally nothing changed since your last action.
+
 Hard rules:
 - Write in the same language as the document (Japanese doc → Japanese).
-- Be small: at most 3 ops, at most ~120 words of new content total.
-- Good contributions: answer a question directed at you/AI, continue or complete what a human started (lists, outlines, sections), add a Mermaid diagram (\`\`\`mermaid fenced block) when a flow/structure/relationship is described in prose, gently fix an obvious factual/typo error via replace.
+- Keep each contribution digestible: at most 3 ops, ~150 words of new content total.
 - For diagrams ALWAYS use \`\`\`mermaid code fences. Mermaid syntax MUST be valid: start with "flowchart TD" (or LR), ASCII-only node IDs, and EVERY label in double quotes — e.g. A["ユーザー"] --> B["エディタ"]. No semicolons, no parentheses/braces/slashes outside quoted labels, no subgraph unless essential, max ~12 nodes. Never invent other embed types.
-- delete/replace ONLY when clearly warranted: the human asked, exact duplicates, or content explicitly marked as done/obsolete. Never delete substance you merely disagree with.
-- If nothing genuinely helps — humans mid-thought, fragments, or you already responded to this state — return ops: []. Silence is professional. Never spam, never repeat yourself, never summarize the doc unprompted.
+- delete/replace when asked (explicitly or clearly implied: duplicates, obsolete/done items, content the humans marked as wrong). Don't delete substance you merely disagree with.
 - Ops apply strictly top-to-bottom; two append_after on the same blockId keep their order (the second lands after the first's content). Prefer ONE append_after containing all of your new content (prose AND fences together, in reading order) over multiple ops.
 - NEVER open with filler acknowledgments ("承知しました", "わかりました", "Sure!", "説明します"). Start directly with the substance, like edits in a shared doc — not chat. No meta-commentary about being an AI.`;
 
@@ -114,30 +142,109 @@ function validateOps(raw: unknown): AgentOp[] {
 }
 
 /**
- * Cogno's thinking brain, powered by Claude.
- *
- * Unlike a stateless one-shot call, the brain keeps the full collaboration as
- * a running Claude conversation: every decision it makes becomes part of the
- * history it sees next time. This is the "stateful watch loop" idea from the
- * standalone impersonator, expressed the Claude-native way — the agent has a
- * genuine memory of what it already wrote, so it continues its own train of
- * thought and avoids re-doing or repeating past contributions. The immutable
- * system prompt is cached across turns.
+ * Loose JSON extraction for CLI mode (no structured outputs there). Tolerates
+ * a fenced reply, but never fence-scans a reply that already starts with '{'
+ * — op markdown legitimately contains \`\`\`mermaid fences inside JSON strings.
+ */
+function extractJson(text: string): string {
+  let raw = text.trim();
+  if (!raw.startsWith('{')) {
+    const fence = raw.match(/```(?:json)?\s*([\s\S]*?)```/);
+    if (fence) raw = fence[1].trim();
+  }
+  if (!raw.startsWith('{')) {
+    const start = raw.indexOf('{');
+    const end = raw.lastIndexOf('}');
+    if (start >= 0 && end > start) raw = raw.slice(start, end + 1);
+  }
+  return raw;
+}
+
+const CLI_JSON_INSTRUCTION = `
+
+Output format — reply with ONLY a JSON object, no prose, no code fences:
+{"thought": "<one short sentence>", "ops": [{"action": "append_after" | "replace" | "delete", "blockId": "<id or null>", "markdown": "<markdown or null>"}]}`;
+
+/** One-shot generation through the local \`claude\` CLI (subscription auth). */
+function runClaudeCli(prompt: string, timeoutMs = 120_000): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const child = spawn(
+      'claude',
+      [
+        '-p',
+        '--model',
+        brainModel(),
+        '--output-format',
+        'json',
+        '--max-turns',
+        '1',
+        '--strict-mcp-config',
+      ],
+      { stdio: ['pipe', 'pipe', 'pipe'] }
+    );
+
+    let stdout = '';
+    let stderr = '';
+    const timer = setTimeout(() => {
+      child.kill('SIGKILL');
+      reject(new Error(`claude CLI timed out after ${timeoutMs}ms`));
+    }, timeoutMs);
+
+    child.stdout.on('data', d => (stdout += d));
+    child.stderr.on('data', d => (stderr += d));
+    child.on('error', err => {
+      clearTimeout(timer);
+      reject(err);
+    });
+    child.on('close', code => {
+      clearTimeout(timer);
+      if (code !== 0) {
+        reject(new Error(`claude CLI exited ${code}: ${stderr.slice(0, 300)}`));
+        return;
+      }
+      try {
+        const envelope = JSON.parse(stdout) as {
+          is_error?: boolean;
+          result?: string;
+        };
+        if (envelope.is_error) {
+          reject(new Error(`claude CLI error: ${envelope.result}`));
+          return;
+        }
+        resolve(envelope.result ?? '');
+      } catch {
+        resolve(stdout);
+      }
+    });
+
+    child.stdin.write(prompt);
+    child.stdin.end();
+  });
+}
+
+interface Turn {
+  role: 'user' | 'assistant';
+  content: string;
+}
+
+/**
+ * Cogno's stateful brain. Keeps the collaboration as a running conversation —
+ * every decision it makes becomes part of the history it sees next time, so
+ * the agent has genuine memory of what it already wrote.
  */
 export class CognoBrain {
-  private readonly client: Anthropic;
-  private readonly history: Anthropic.MessageParam[] = [];
+  private readonly client: Anthropic | null;
+  private readonly history: Turn[] = [];
   /** Keep the conversation bounded so token cost stays flat over a long session. */
   private static readonly MAX_HISTORY = 10;
 
   constructor() {
     const apiKey = process.env.ANTHROPIC_API_KEY;
-    if (!apiKey) {
-      throw new Error('ANTHROPIC_API_KEY is not set (agent reads .env.local).');
-    }
     // A jsdom `window` is installed for TipTap, which makes the SDK think it's
     // a browser; this is a trusted local process, so opt in explicitly.
-    this.client = new Anthropic({ apiKey, dangerouslyAllowBrowser: true });
+    this.client = apiKey
+      ? new Anthropic({ apiKey, dangerouslyAllowBrowser: true })
+      : null; // cli mode — subscription via `claude -p`
   }
 
   async think(input: {
@@ -156,38 +263,24 @@ Respond with your decision as JSON.`;
 
     this.history.push({ role: 'user', content: userTurn });
 
-    let message: Anthropic.Message;
+    let text: string;
     try {
-      message = await this.client.messages.create({
-        model: MODEL,
-        max_tokens: 2000,
-        thinking: { type: 'adaptive' },
-        // effort low keeps the reactive decision fast; structured outputs
-        // guarantee the {thought, ops} shape.
-        output_config: {
-          effort: 'low',
-          format: { type: 'json_schema', schema: RESPONSE_SCHEMA },
-        },
-        system: [
-          { type: 'text', text: SYSTEM, cache_control: { type: 'ephemeral' } },
-        ],
-        messages: this.history,
-        // Cast: `output_config.format` / adaptive thinking are current-API
-        // fields that may lag the installed SDK's static types.
-      } as unknown as Anthropic.MessageCreateParamsNonStreaming);
+      text = this.client ? await this.thinkApi() : await this.thinkCli();
     } catch (err) {
       // Don't poison the history with a turn that got no answer.
       this.history.pop();
       throw err;
     }
 
-    const text = textOf(message);
     let parsed: { thought?: string; ops?: AgentOp[] };
     try {
-      parsed = JSON.parse(text);
+      parsed = JSON.parse(this.client ? text : extractJson(text));
     } catch {
       this.history.pop();
-      return { thought: 'unparseable model output — staying quiet', ops: [] };
+      return {
+        thought: `unparseable model output — staying quiet (got: ${text.slice(0, 120)}…)`,
+        ops: [],
+      };
     }
 
     // Record what we decided so the next turn remembers it.
@@ -195,6 +288,36 @@ Respond with your decision as JSON.`;
     this.trimHistory();
 
     return { thought: parsed.thought ?? '', ops: validateOps(parsed) };
+  }
+
+  private async thinkApi(): Promise<string> {
+    const message = await this.client!.messages.create({
+      model: brainModel(),
+      max_tokens: 2000,
+      thinking: { type: 'adaptive' },
+      // effort low keeps the reactive decision fast; structured outputs
+      // guarantee the {thought, ops} shape.
+      output_config: {
+        effort: 'low',
+        format: { type: 'json_schema', schema: RESPONSE_SCHEMA },
+      },
+      system: [
+        { type: 'text', text: SYSTEM, cache_control: { type: 'ephemeral' } },
+      ],
+      messages: this.history.map(t => ({ role: t.role, content: t.content })),
+      // Cast: `output_config.format` / adaptive thinking are current-API
+      // fields that may lag the installed SDK's static types.
+    } as unknown as Anthropic.MessageCreateParamsNonStreaming);
+    return textOf(message);
+  }
+
+  private async thinkCli(): Promise<string> {
+    // The CLI is stateless per call — replay the bounded conversation so the
+    // brain keeps the same memory semantics as API mode.
+    const transcript = this.history
+      .map(t => (t.role === 'user' ? `[HUMAN TURN]\n${t.content}` : `[YOUR PAST DECISION]\n${t.content}`))
+      .join('\n\n');
+    return runClaudeCli(`${SYSTEM}\n\n---\n\n${transcript}${CLI_JSON_INSTRUCTION}`);
   }
 
   /** Keep the last MAX_HISTORY messages, always starting on a user turn. */
@@ -208,13 +331,17 @@ Respond with your decision as JSON.`;
   }
 }
 
-/** One-shot connectivity check — is Claude reachable with this key? */
+/** One-shot connectivity check — is Claude reachable in the active mode? */
 export async function pingClaude(): Promise<string> {
-  const apiKey = process.env.ANTHROPIC_API_KEY;
-  if (!apiKey) throw new Error('ANTHROPIC_API_KEY is not set.');
-  const client = new Anthropic({ apiKey, dangerouslyAllowBrowser: true });
+  if (brainMode() === 'cli') {
+    return (await runClaudeCli('Reply with exactly: pong', 60_000)).trim();
+  }
+  const client = new Anthropic({
+    apiKey: process.env.ANTHROPIC_API_KEY!,
+    dangerouslyAllowBrowser: true,
+  });
   const message = await client.messages.create({
-    model: MODEL,
+    model: brainModel(),
     max_tokens: 16,
     messages: [{ role: 'user', content: 'Reply with exactly: pong' }],
   });
