@@ -18,6 +18,8 @@ interface AiRequestBody {
   context?: string;
   selection?: string;
   mode?: 'text' | 'edit';
+  /** Spoken instruction, base64-encoded audio + its MIME type. Edit mode only. */
+  audio?: { data: string; mimeType: string };
 }
 
 function extractJson(text: string): unknown {
@@ -126,7 +128,15 @@ export async function POST(req: Request) {
   }
 
   const prompt = (body.prompt ?? '').trim();
-  if (!prompt) {
+  const audio = body.audio;
+  const hasAudio =
+    !!audio &&
+    typeof audio.data === 'string' &&
+    !!audio.data &&
+    typeof audio.mimeType === 'string' &&
+    !!audio.mimeType;
+  // A request needs either a typed prompt or spoken audio (edit mode).
+  if (!prompt && !hasAudio) {
     return Response.json({ error: 'Missing "prompt".' }, { status: 400 });
   }
 
@@ -143,7 +153,7 @@ export async function POST(req: Request) {
           { tool: 'show_cursor', anchor: 'selection' },
           {
             tool: 'append_markdown',
-            markdown: `AI edit (mock): ${prompt}`,
+            markdown: `AI edit (mock): ${prompt || '(spoken request)'}`,
           },
           { tool: 'hide_cursor' },
         ],
@@ -175,9 +185,28 @@ export async function POST(req: Request) {
     const ai = new GoogleGenAI({ apiKey });
 
     if (mode === 'edit') {
+      // When the request is spoken, the instruction lives in the attached
+      // audio; tell the model to read it from there instead of the text field.
+      const editPrompt = buildEditPrompt(
+        prompt || 'The user request is in the attached audio. Interpret it.',
+        context,
+        selection
+      );
+      const contents =
+        hasAudio && audio
+          ? [
+              {
+                role: 'user',
+                parts: [
+                  { text: editPrompt },
+                  { inlineData: { mimeType: audio.mimeType, data: audio.data } },
+                ],
+              },
+            ]
+          : editPrompt;
       const response = await ai.models.generateContent({
         model: MODEL,
-        contents: buildEditPrompt(prompt, context, selection),
+        contents,
         config: {
           responseMimeType: 'application/json',
           temperature: 0.2,

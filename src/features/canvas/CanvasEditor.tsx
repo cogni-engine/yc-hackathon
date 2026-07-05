@@ -13,6 +13,7 @@ import { ImageControls } from '@/components/tiptap/ImageControls';
 import { EditorStyles } from '@/features/notes/lib/editorStyles';
 import { CollaborativeEditorStyles } from '@/features/notes/lib/collaborativeEditorStyles';
 import { getDisplayName } from '@/features/user/identity';
+import { VoiceEditButton } from './VoiceEditButton';
 
 interface CanvasEditorProps {
   /** Note id — the Hocuspocus document is `note:{noteId}`. */
@@ -174,6 +175,7 @@ export function CanvasEditor({
           <TableControls editor={editor} />
           <ImageControls editor={editor} />
           <SelectionSummarize editor={editor} />
+          <VoiceEditButton editor={editor} />
         </>
       ) : (
         <div className='text-sm text-neutral-400'>{placeholder}</div>
