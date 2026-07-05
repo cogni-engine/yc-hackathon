@@ -422,7 +422,14 @@ export class CognoBrain {
     blocks: BlockSnapshot[];
     changedIds: string[];
     ownBlockIds?: string[];
+    /** Split passes: {n:1,of:2} = do the most impactful bit NOW, briefly. */
+    pass?: { n: number; of: number };
   }): Promise<BrainResult> {
+    const passNote = input.pass
+      ? input.pass.n < input.pass.of
+        ? `\nThis is pass ${input.pass.n} of ${input.pass.of} — another pass runs IMMEDIATELY after this one. Do only the most impactful 1-2 ops now and keep the generated markdown SHORT; leave the rest for the next pass.`
+        : `\nThis is the final pass ${input.pass.n} of ${input.pass.of} — finish what remains from your previous pass (or return ops: [] if the work is complete).`
+      : '';
     const userTurn = `Document blocks (top to bottom):
 
 ${renderBlocks(input.blocks)}
@@ -432,7 +439,7 @@ Blocks changed by humans since your last look: ${
     }
 Blocks YOU (Cogno) wrote earlier — drafts you may revise/delete: ${
       input.ownBlockIds?.length ? input.ownBlockIds.join(', ') : '(none yet)'
-    }
+    }${passNote}
 
 Respond with your decision as JSON.`;
 

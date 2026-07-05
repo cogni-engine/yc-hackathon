@@ -20,8 +20,9 @@ import { listNotes } from './notes';
 const FAST_DELAY_MS = 350;
 const FAST_LOOP_GAP_MS = 400; // pause between engaged-loop rounds
 const FAST_IDLE_ROUNDS = 2; // consecutive no-op rounds before disengaging
-const DEEP_QUIET_MS = 2500;
+const DEEP_QUIET_MS = 700;
 const DEEP_COOLDOWN_MS = 8000;
+const DEEP_CYCLES = 2; // split each deep pass into short generate→perform cycles
 const MAX_SESSIONS = Number(process.env.AGENT_MAX_SESSIONS) || 6; // concurrent notes
 const NOTES_POLL_MS = 15000; // how often to look for new notes
 
@@ -398,37 +399,45 @@ async function watchNote(
     deepDueAt = Infinity;
     busy = true;
     try {
-      const { blocks, hash, changedIds } = snapshot();
-      if (hash === lastHash) return;
+      // Short generate→perform cycles: pass 1 does the most impactful bit
+      // with a SHORT generation (fast first visible edit), pass 2 finishes.
+      for (let cycle = 1; cycle <= DEEP_CYCLES; cycle++) {
+        const { blocks, hash, changedIds } = snapshot();
+        if (cycle === 1 && hash === lastHash) return;
 
-      log(`${tag} thinking… (${blocks.length} blocks, changed: ${changedIds.join(', ') || '-'})`);
-      const { thought, ops: rawOps } = await brain.think({
-        blocks,
-        changedIds,
-        ownBlockIds: [...ownBlocks],
-      });
-      // GUARD: the human's newest block (their latest message/instruction)
-      // may never be deleted or rewritten — even by the deep brain.
-      const newestHuman = changedIds[changedIds.length - 1];
-      const ops = rawOps.filter(
-        op =>
-          op.action === 'append_after' ||
-          op.blockId == null ||
-          op.blockId !== newestHuman ||
-          ownBlocks.has(op.blockId)
-      );
-      if (ops.length < rawOps.length) {
-        log(`${tag} blocked ${rawOps.length - ops.length} op(s) on the human's newest block`);
-      }
-      log(`${tag} decision: ${thought} → ${ops.length} op(s)`);
-      if (ops.length > 0) {
+        log(
+          `${tag} thinking… (pass ${cycle}/${DEEP_CYCLES}, ${blocks.length} blocks, changed: ${changedIds.join(', ') || '-'})`
+        );
+        const { thought, ops: rawOps } = await brain.think({
+          blocks,
+          changedIds,
+          ownBlockIds: [...ownBlocks],
+          pass: { n: cycle, of: DEEP_CYCLES },
+        });
+        // GUARD: the human's newest block (their latest message/instruction)
+        // may never be deleted or rewritten — even by the deep brain.
+        const newestHuman = changedIds[changedIds.length - 1];
+        const ops = rawOps.filter(
+          op =>
+            op.action === 'append_after' ||
+            op.blockId == null ||
+            op.blockId !== newestHuman ||
+            ownBlocks.has(op.blockId)
+        );
+        if (ops.length < rawOps.length) {
+          log(`${tag} blocked ${rawOps.length - ops.length} op(s) on the human's newest block`);
+        }
+        log(`${tag} decision: ${thought} → ${ops.length} op(s)`);
+        if (ops.length === 0) break; // nothing (left) to do
+
         const before = new Map(
           session.blocks().map(b => [b.id ?? '', b.markdown] as const)
         );
         session.setTyping(true);
         await executeOps(session, ops);
+        session.setTyping(false);
         trackOwn(before, ops, new Set(changedIds));
-        log(`${tag} done editing.`);
+        log(`${tag} pass ${cycle} done.`);
       }
     } catch (err) {
       log(`${tag} act failed:`, err instanceof Error ? err.message : err);
